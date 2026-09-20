@@ -1,0 +1,33 @@
+# Build trees. The negation matters: build-aux/ is SOURCE (flatpak manifests,
+# the NSIS installer script), and "build*/" swallows it -- new manifests then
+# never show up as untracked and quietly go missing from CI.
+build*/
+!build-aux/
+
+# Provisioned dependencies. cmake/Dependencies.cmake fetches these at their
+# pinned commits, so they are build output, not source -- and committing them
+# as bare gitlinks (which `git add -A` will happily do once they exist
+# locally) is worse than not tracking them at all: with no .gitmodules a
+# clone gets empty directories, and an empty directory is indistinguishable
+# from a populated one except by the SENTINEL test (PORTING.md 10.4).
+third_party/
+
+# Staged sources: produced by cmake/StageStella.cmake from the pinned Stella
+# checkout. Never edit these; edit the source checkout and re-stage with
+# -DSTELLA_RESTAGE=ON.
+core/stella-generated/
+
+# FujiNet runtime build tree (tools/fujinet/build-fujinet-desktop.sh).
+tools/fujinet/work/
+
+# Cartridge images that stray into the tree while testing. The only image
+# this project ships is FujiNet's own CONFIG client, embedded in Stella.
+*.a26
+*.bin
+!core/tests/**/*.bin
+
+.cache/
+compile_commands.json
+.flatpak-builder/
+__pycache__/
+*.pyc
