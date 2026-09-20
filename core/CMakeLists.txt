@@ -128,4 +128,62 @@ if(WIN32)
   target_link_libraries(stella_core PUBLIC ws2_32 shell32)
 endif()
 
+
+# ---- a2600_session: the frontend contract ----------------------------------
+#
+# A separate target from stella_core so the core stays SDL-free: audio_sdl.c
+# and gamepad_sdl.c live here, and host_test links stella_core alone to keep
+# that honest. Found-or-skipped, exactly as the frontends are: stella_core is
+# SDL-free by construction, so `-DFRONTEND=none` on a machine (or a
+# cross-toolchain) with no SDL3 must still configure and build the emulator
+# and its tests.
+find_package(SDL3 CONFIG QUIET)
+if(NOT SDL3_FOUND)
+  message(STATUS "a2600_session: SDL3 not found -- building the core and its "
+                 "tests only (no audio, no gamepads, no frontends)")
+  add_subdirectory(tests)
+  return()
+endif()
+
+set(A2600_SESSION_C_SOURCES
+  src/settings.c
+  src/paths.c
+  src/media.c
+  src/fujinet_runtime.c
+  src/audio_sdl.c
+  src/bindings.c
+  src/hid_keys.c)
+set(A2600_SESSION_CXX_SOURCES
+  src/session.cpp)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/gamepad_sdl.c")
+  list(APPEND A2600_SESSION_C_SOURCES src/gamepad_sdl.c)
+else()
+  set(A2600_GAMEPAD_STUB ON)
+endif()
+
+add_library(a2600_session STATIC
+  ${A2600_SESSION_C_SOURCES} ${A2600_SESSION_CXX_SOURCES})
+set_target_properties(a2600_session PROPERTIES
+  C_STANDARD 11
+  POSITION_INDEPENDENT_CODE ON)
+target_include_directories(a2600_session PUBLIC
+  "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_include_directories(a2600_session PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(a2600_session PUBLIC stella_core SDL3::SDL3)
+if(A2600_GAMEPAD_STUB)
+  target_compile_definitions(a2600_session PRIVATE A2600_GAMEPAD_STUB=1)
+endif()
+# setenv()/getaddrinfo() under a strict -std=c11
+target_compile_definitions(a2600_session PRIVATE _GNU_SOURCE _DEFAULT_SOURCE)
+set_source_files_properties(${A2600_SESSION_C_SOURCES} ${A2600_SESSION_CXX_SOURCES}
+  PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra")
+
+# Where an uninstalled build and an installed copy find the FujiNet runtime
+# (core/src/paths.c probes these after the executable's own directory).
+target_compile_definitions(a2600_session PRIVATE
+  A2600_DEV_FUJINET_OUT="${CMAKE_SOURCE_DIR}/tools/fujinet/work/out"
+  A2600_INSTALL_DATADIR="${CMAKE_INSTALL_FULL_DATADIR}/fujinet-go-atari2600"
+  A2600_INSTALL_LIBDIR="${CMAKE_INSTALL_FULL_LIBDIR}/fujinet-go-atari2600")
+
 add_subdirectory(tests)
