@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=FujiNet Go Atari 2600
+GenericName=Atari 2600 Emulator
+Comment=An Atari 2600 with a built-in FujiNet
+Exec=fujinet-go-atari2600-gnome %f
+Icon=online.fujinet.go.atari2600.gnome
+Terminal=false
+Categories=Game;Emulator;
+Keywords=atari;2600;vcs;stella;fujinet;emulator;retro;
+MimeType=application/x-atari-2600-rom;
+StartupNotify=true
