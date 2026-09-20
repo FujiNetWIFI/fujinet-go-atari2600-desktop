@@ -57,6 +57,7 @@ struct a2600session {
 
     /* the running configuration */
     a2600session_start_opts opts;
+    int  effective_type[2];   /* what Stella attached (AUTO resolved), for the gamepad thread */
     char cart_path[A2600_PATH_MAX];
     int  switch_state[A2600_SW_COUNT];    /* toggling switches: current position */
 

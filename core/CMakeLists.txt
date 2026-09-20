@@ -154,7 +154,8 @@ set(A2600_SESSION_C_SOURCES
   src/bindings.c
   src/hid_keys.c)
 set(A2600_SESSION_CXX_SOURCES
-  src/session.cpp)
+  src/session.cpp
+  src/debug.cpp)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/gamepad_sdl.c")
   list(APPEND A2600_SESSION_C_SOURCES src/gamepad_sdl.c)
 else()

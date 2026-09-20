@@ -31,7 +31,12 @@
 
 extern "C" {
 #include "session_internal.h"
+#include "a2600debug.h"
 }
+
+// debug.cpp
+void a2600debug_note_stop(a2600session* s, const char* msg, int addr);
+void a2600debug_destroy(a2600session* s);
 
 namespace {
 
@@ -115,18 +120,22 @@ uInt32 stella_format(int f)
 // Console::changeLeftController does internally, without the cycling. An
 // explicit type is honoured by setControllers; AUTO ("Unknown") re-runs
 // Stella's detector. CompuMate re-seats the cartridge and is left alone.
-void apply_port_types(OSystem& os, const int types[2])
+void apply_port_types(OSystem& os, struct a2600session* s)
 {
   if(!os.hasConsole()) return;
   Console& console = os.console();
-  if(console.cartridge().detectedType() == "CM") return;
-
-  Properties p = console.properties();
-  p.set(PropType::Controller_Left, Controller::getPropName(stella_type(types[0])));
-  p.set(PropType::Controller_Right, Controller::getPropName(stella_type(types[1])));
-  console.setProperties(p);
-  console.setControllers(p.get(PropType::Cart_MD5));
-  os.propSet().insert(p, false);
+  if(console.cartridge().detectedType() != "CM")
+  {
+    Properties p = console.properties();
+    p.set(PropType::Controller_Left, Controller::getPropName(stella_type(s->opts.port_type[0])));
+    p.set(PropType::Controller_Right, Controller::getPropName(stella_type(s->opts.port_type[1])));
+    console.setProperties(p);
+    console.setControllers(p.get(PropType::Cart_MD5));
+    os.propSet().insert(p, false);
+  }
+  // What the gamepad thread maps against: the type actually attached.
+  s->effective_type[0] = our_type(console.leftController().type());
+  s->effective_type[1] = our_type(console.rightController().type());
 }
 
 void apply_tv_format(OSystem& os, int format)
@@ -233,6 +242,7 @@ extern "C" void a2600session_free(a2600session* s)
   a2600session_stop(s);
   a2600session_settings_flush(s);
   settings_free_all(s);
+  a2600debug_destroy(s);
   delete host_of(s);
   pthread_mutex_destroy(&s->sysact_mtx);
   free(s);
@@ -296,11 +306,14 @@ extern "C" int a2600session_start(a2600session* s, const a2600session_start_opts
   cfg.options["audio.resampling_quality"] = static_cast<Int32>(2);   // lanczos_2
 
   StellaHost::Callbacks cb;
+  cb.onStopped = [s](StellaHost::StopReason r, const std::string& msg, int addr) {
+    a2600debug_note_stop(s, r == StellaHost::StopReason::Paused ? "stopped" : msg.c_str(), addr);
+  };
   cb.onConsoleReplaced = [s] {
     // A network boot (or our own reboot) replaced the console's
     // properties: re-apply the user's controller choice.
     if(auto* os = host_of(s)->osystem())
-      apply_port_types(*os, s->opts.port_type);
+      apply_port_types(*os, s);
   };
   host_of(s)->setCallbacks(cb);
 
@@ -314,7 +327,7 @@ extern "C" int a2600session_start(a2600session* s, const a2600session_start_opts
 
   host_of(s)->withStella([s](OSystem& os) {
     apply_tv_format(os, s->opts.tv_format);
-    apply_port_types(os, s->opts.port_type);
+    apply_port_types(os, s);
     return 0;
   });
 
@@ -585,7 +598,7 @@ extern "C" void a2600session_set_port_type(a2600session* s, int port, int type)
   a2600session_set_int(s, port ? "port1_type" : "port0_type", type);
   if(!s->running) return;
   host_of(s)->withStella([s](OSystem& os) {
-    apply_port_types(os, s->opts.port_type);
+    apply_port_types(os, s);
     return 0;
   });
 }
@@ -672,7 +685,7 @@ extern "C" const char* a2600session_sd_path(const a2600session* s) { return s->f
 
 extern "C" a2600debug* a2600session_debugger(a2600session* s)
 {
-  return static_cast<a2600debug*>(s->debugger);
+  return a2600debug_get(s);
 }
 
 // Reachable from the debugger module (core/src/debug.cpp) without a public

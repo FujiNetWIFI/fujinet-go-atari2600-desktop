@@ -37,4 +37,18 @@ target_link_libraries(fujibus_smoke PRIVATE a2600_session)
 add_test(NAME fujibus_smoke COMMAND fujibus_smoke)
 set_tests_properties(fujibus_smoke PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120 RUN_SERIAL ON)
 
+# The gamepad layer's pure helpers, and that the SDL subsystem starts and
+# stops with no hardware attached.
+add_executable(gamepad_test gamepad_test.c)
+target_link_libraries(gamepad_test PRIVATE a2600_session)
+target_include_directories(gamepad_test PRIVATE "${CMAKE_SOURCE_DIR}/core/src")
+add_test(NAME gamepad COMMAND gamepad_test)
+
+# The debugger contract against the running CONFIG client: stop, registers,
+# step, disassembly with the PC line, breakpoints, TIA state, resume.
+add_executable(debug_test debug_test.c)
+target_link_libraries(debug_test PRIVATE a2600_session)
+add_test(NAME debug COMMAND debug_test)
+set_tests_properties(debug PROPERTIES TIMEOUT 120)
+
 endif()
