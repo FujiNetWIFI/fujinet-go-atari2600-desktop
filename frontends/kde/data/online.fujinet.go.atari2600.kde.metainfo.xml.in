@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>online.fujinet.go.atari2600.kde</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>FujiNet Go Atari 2600</name>
+  <summary>An Atari 2600 with a built-in FujiNet</summary>
+  <description>
+    <p>
+      A self-contained Atari 2600 with a FujiNet built in: browse a network
+      host from the console, boot cartridges over the network, and let the
+      booted program keep talking to the network, all in one application.
+    </p>
+    <p>
+      The emulator is Stella, with the FujiNet cartridge running the real
+      cartridge firmware's own protocol sources, so it behaves exactly as the
+      hardware does. Joysticks, paddles, driving controllers and keypads can
+      be chosen per port, gamepads are picked up as they are plugged in, and
+      Stella's complete debugger is available in a native window.
+    </p>
+    <p>
+      Nothing copyrighted is included: the Atari 2600 has no system ROM, and
+      the only built-in program is FujiNet's own CONFIG client.
+    </p>
+  </description>
+  <launchable type="desktop-id">online.fujinet.go.atari2600.kde.desktop</launchable>
+  <url type="homepage">https://fujinet.online/</url>
+  <url type="bugtracker">https://github.com/FujiNetWIFI/fujinet-go-atari2600-desktop/issues</url>
+  <developer id="online.fujinet">
+    <name>Thomas Cherryhomes</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <screenshots>
+    <screenshot type="default">
+      <caption>The FujiNet CONFIG client browsing network hosts from the console</caption>
+      <image>https://raw.githubusercontent.com/FujiNetWIFI/fujinet-go-atari2600-desktop/main/data/screenshots/1_running_config.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>The built-in debugger</caption>
+      <image>https://raw.githubusercontent.com/FujiNetWIFI/fujinet-go-atari2600-desktop/main/data/screenshots/2_debugger.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Both keypad controllers</caption>
+      <image>https://raw.githubusercontent.com/FujiNetWIFI/fujinet-go-atari2600-desktop/main/data/screenshots/3_keypads.png</image>
+    </screenshot>
+  </screenshots>
+  <releases>
+    <!-- The CURRENT release templates its version from @PROJECT_VERSION@, so
+         it cannot disagree with the tree; past releases are literal. The
+         release job checks that this first entry is still a template. -->
+    <release version="@PROJECT_VERSION@" date="2026-09-20">
+      <description>
+        <p>
+          First release: Stella with the FujiNet cartridge, an in-process
+          FujiNet, native GNOME, KDE, macOS and Windows frontends, both keypad
+          controllers on screen, per-port controller types, hotplugged
+          gamepads and the complete Stella debugger.
+        </p>
+      </description>
+    </release>
+  </releases>
+</component>
