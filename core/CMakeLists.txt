@@ -125,7 +125,7 @@ set_target_properties(stella_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 find_package(Threads REQUIRED)
 target_link_libraries(stella_core PUBLIC Threads::Threads)
 if(WIN32)
-  target_link_libraries(stella_core PUBLIC ws2_32 shell32)
+  target_link_libraries(stella_core PUBLIC ws2_32 shell32 winmm)   # winmm: timeBeginPeriod
 endif()
 
 

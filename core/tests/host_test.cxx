@@ -14,6 +14,7 @@
  */
 
 #include <chrono>
+#include <map>
 #include <random>
 #include <cstdio>
 #include <cstdlib>
@@ -54,29 +55,44 @@ namespace {
     return false;
   }
 
-  bool frameNonBlankNow(StellaHost& host)
+  bool frameNonBlankNow(StellaHost& host, bool verbose)
   {
     std::vector<uInt32> px; StellaHost::FrameInfo info; uInt64 s = 0;
     if(!host.copyFrame(px, info, &s)) return false;
-    std::printf("frame %ux%u serial %llu rate %d\n", info.width, info.height,
-                static_cast<unsigned long long>(info.serial), info.refreshRate);
     if(info.width != 160 || info.height < 100 || info.height > 320) return false;
     uInt32 distinct = 0; uInt32 last = px[0];
     for(uInt32 p : px) if(p != last) { ++distinct; last = p; }
+    if(verbose)
+    {
+      // What the frame actually holds, for a runner nobody can look at.
+      std::map<uInt32, uInt32> hist;
+      for(uInt32 p : px) ++hist[p & 0xffffff];
+      std::printf("frame %ux%u serial %llu rate %d: %u transitions, %zu colours;",
+                  info.width, info.height, static_cast<unsigned long long>(info.serial),
+                  info.refreshRate, distinct, hist.size());
+      int shown = 0;
+      for(const auto& [rgb, n] : hist) { if(shown++ == 4) break; std::printf(" %06x x%u", rgb, n); }
+      std::printf("\n");
+    }
     return distinct > 50;
   }
 
   // The CONFIG client paints within its first few dozen frames on an idle
-  // machine; on a loaded CI runner those frames can take seconds, so wait
-  // for the picture rather than asserting it at a fixed frame count.
-  bool frameNonBlank(StellaHost& host, int timeoutMs = 5000)
+  // machine; on a loaded CI runner those frames can take seconds (a Windows
+  // runner before timeBeginPeriod ran the machine at 30 fps), so wait for
+  // the picture rather than asserting it at a fixed frame count.
+  bool frameNonBlank(StellaHost& host, int timeoutMs = 10000)
   {
     const auto start = std::chrono::steady_clock::now();
+    int polls = 0;
     for(;;)
     {
-      if(frameNonBlankNow(host)) return true;
+      if(frameNonBlankNow(host, polls++ % 20 == 0)) return true;
       if(std::chrono::steady_clock::now() - start > std::chrono::milliseconds(timeoutMs))
+      {
+        frameNonBlankNow(host, true);
         return false;
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
   }

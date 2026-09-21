@@ -8,6 +8,16 @@
 #include <chrono>
 #include <cstring>
 
+#if defined(_WIN32)
+  // timeBeginPeriod: Windows sleeps in 15.6 ms steps by default, which
+  // turns the per-frame sleep in pace() into ~30 fps. Asking for 1 ms
+  // granularity while the emulator runs is what every emulator on Windows
+  // does; it is process-scoped and undone in stop().
+  #define WIN32_LEAN_AND_MEAN
+  #include <windows.h>
+  #include <timeapi.h>
+#endif
+
 #include "CartFUJI.hxx"
 #include "Console.hxx"
 #include "Debugger.hxx"
@@ -71,6 +81,9 @@ bool StellaHost::start(const Config& config, std::string& error)
   myConfig = config;
   myQuit.store(false);
   myLastError.clear();
+#if defined(_WIN32)
+  timeBeginPeriod(1);
+#endif
 
   std::promise<std::string> ready;
   auto fut = ready.get_future();
@@ -91,6 +104,9 @@ bool StellaHost::start(const Config& config, std::string& error)
     {
       delete ctx;
       error = myLastError = "could not start the emulation thread";
+#if defined(_WIN32)
+      timeEndPeriod(1);
+#endif
       return false;
     }
     myThreadStarted = true;
@@ -102,6 +118,9 @@ bool StellaHost::start(const Config& config, std::string& error)
     myLastError = error;
     pthread_join(myThread, nullptr);
     myThreadStarted = false;
+#if defined(_WIN32)
+    timeEndPeriod(1);
+#endif
     return false;
   }
   return true;
@@ -166,6 +185,9 @@ void StellaHost::stop()
   pthread_join(myThread, nullptr);
   myThreadStarted = false;
   myRunning.store(false);
+#if defined(_WIN32)
+  timeEndPeriod(1);
+#endif
 }
 
 // ---- jobs --------------------------------------------------------------
