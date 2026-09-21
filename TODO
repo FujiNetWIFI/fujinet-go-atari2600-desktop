@@ -127,7 +127,14 @@ M7  macOS frontend (AppKit)                                         [x]
       Apple's libc++ availability gates: floating-point std::to_chars needs
       macOS 13.3 (deployment target raised from 11.0 to 13.3) and
       floating-point std::from_chars needs macOS 26 (shadowed in
-      core/stella/host/Variant.hxx with strtof_l/strtod_l on Apple)
+      core/stella/host/Variant.hxx with strtof_l/strtod_l on Apple).
+      Then every test that boots Stella crashed at startup on the Intel
+      runner only: OSystemFNGO handed Stella's file-backed settings
+      repository a TEMPORARY FSNode, and that class keeps a reference.
+      GCC and Apple Silicon left the dead stack slot intact; Intel's
+      Apple clang reused it. Found locally with clang -fsanitize=address
+      (stack-use-after-return in FSNode::exists) while the runners were
+      busy; the node is a member now
 
 M8  packaging, docs, release                                         [~]
   [x] README.md, COMPLIANCE.md, this log

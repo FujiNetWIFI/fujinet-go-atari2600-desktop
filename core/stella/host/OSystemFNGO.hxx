@@ -41,10 +41,17 @@ class OSystemFNGO : public OSystem
       if(onStateChanged) onStateChanged(state);
     }
 
+    // The file repository keeps a REFERENCE to the node it is given
+    // (KeyValueRepositoryFile::myNode), so the node must outlive it: it is
+    // a member here, as in Stella's own OSystemStandalone. Passing a
+    // temporary compiled and ran on GCC and on Apple Silicon, whose dead
+    // stack slot happened to keep its bytes, and crashed at startup on
+    // Intel Macs, whose Apple clang reused the slot. AddressSanitizer:
+    // stack-use-after-return in FSNode::exists().
     shared_ptr<KeyValueRepository> getSettingsRepository() override
     {
-      return std::make_shared<KeyValueRepositoryJsonFile>(
-        FSNode(FNGOHostHooks::baseDir() + "stella-settings.json"));
+      mySettingsNode = FSNode(FNGOHostHooks::baseDir() + "stella-settings.json");
+      return std::make_shared<KeyValueRepositoryJsonFile>(mySettingsNode);
     }
 
     // Per-ROM property overrides are not persisted: the session re-applies
@@ -72,6 +79,9 @@ class OSystemFNGO : public OSystem
 
     void initPersistence(FSNode&) override { }
     string describePersistence() override { return "json files"; }
+
+  private:
+    FSNode mySettingsNode;
 
   private:
     OSystemFNGO(const OSystemFNGO&) = delete;
