@@ -112,14 +112,28 @@ int main()
   check(waitFrames(host, serial, 60, 5000), "60 frames arrive within 5 s");
   check(frameNonBlank(host), "the CONFIG client painted something (frame is not blank)");
 
-  // Pacing: 60 frames should take about a second at 60 Hz.
+  // Pacing: 60 frames should take about a second at 60 Hz. The lower bound
+  // is the one that matters (an unthrottled core free-runs and every other
+  // check still passes); the upper bound is only asserted where the OS
+  // itself can sleep for a frame without gross overshoot -- a loaded CI
+  // virtual machine (the macOS runners especially) can turn a 16 ms sleep
+  // into 50, and that says nothing about the pacing code.
   {
+    const auto s0 = std::chrono::steady_clock::now();
+    for(int i = 0; i < 10; ++i)
+      std::this_thread::sleep_for(std::chrono::microseconds(16'667));
+    const double tenSleeps = std::chrono::duration<double>(std::chrono::steady_clock::now() - s0).count();
+    const bool accurateSleeps = tenSleeps < 0.25;   // 167 ms nominal
+    std::printf("ten 16.7 ms sleeps took %.3f s (%s)\n", tenSleeps,
+                accurateSleeps ? "accurate" : "coarse: upper pacing bound not asserted");
+
     uInt64 s2 = serial;
     const auto t0 = std::chrono::steady_clock::now();
-    waitFrames(host, s2, 60, 5000);
+    waitFrames(host, s2, 60, 10000);
     const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     std::printf("60 frames in %.3f s\n", secs);
-    check(secs > 0.8 && secs < 1.5, "the machine paces at roughly its refresh rate");
+    check(secs > 0.8, "the machine is throttled (60 frames take at least 0.8 s)");
+    check(!accurateSleeps || secs < 1.5, "the machine paces at roughly its refresh rate");
   }
 
   // Stop in the debugger.

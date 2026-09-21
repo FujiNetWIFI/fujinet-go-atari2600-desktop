@@ -45,6 +45,8 @@ namespace {
   // cost the timeout on every frame and halve the frame rate of a frontend
   // with no frame clock -- headless tests included.
   constexpr Int64 VSYNC_RECENT_NS = 250'000'000;
+  // What Stella's own frontend gets (the main thread); see StellaHost.hxx.
+  constexpr size_t EMULATION_THREAD_STACK = 8u << 20;
 }
 
 StellaHost::StellaHost() = default;
@@ -72,7 +74,42 @@ bool StellaHost::start(const Config& config, std::string& error)
 
   std::promise<std::string> ready;
   auto fut = ready.get_future();
-  myThread = std::thread([this, &ready] {
+  {
+    struct Ctx { StellaHost* self; std::promise<std::string>* ready; };
+    auto* ctx = new Ctx{this, &ready};
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, EMULATION_THREAD_STACK);
+    const int rc = pthread_create(&myThread, &attr,
+      [](void* arg) -> void* {
+        std::unique_ptr<Ctx> c(static_cast<Ctx*>(arg));
+        c->self->threadBody(*c->ready);
+        return nullptr;
+      }, ctx);
+    pthread_attr_destroy(&attr);
+    if(rc != 0)
+    {
+      delete ctx;
+      error = myLastError = "could not start the emulation thread";
+      return false;
+    }
+    myThreadStarted = true;
+  }
+
+  error = fut.get();
+  if(!error.empty())
+  {
+    myLastError = error;
+    pthread_join(myThread, nullptr);
+    myThreadStarted = false;
+    return false;
+  }
+  return true;
+}
+
+void StellaHost::threadBody(std::promise<std::string>& ready)
+{
+  {
     myThreadId = std::this_thread::get_id();
 
     FNGOHostHooks::baseDir() = myConfig.baseDir;
@@ -116,27 +153,18 @@ bool StellaHost::start(const Config& config, std::string& error)
     // the thread that owned it.
     myOSystem.reset();
     myRunning.store(false);
-  });
-
-  error = fut.get();
-  if(!error.empty())
-  {
-    myLastError = error;
-    if(myThread.joinable())
-      myThread.join();
-    return false;
   }
-  return true;
 }
 
 void StellaHost::stop()
 {
-  if(!myThread.joinable())
+  if(!myThreadStarted)
     return;
   myQuit.store(true);
   myJobCv.notify_all();
   myVsyncCv.notify_all();
-  myThread.join();
+  pthread_join(myThread, nullptr);
+  myThreadStarted = false;
   myRunning.store(false);
 }
 

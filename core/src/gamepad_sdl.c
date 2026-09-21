@@ -534,13 +534,20 @@ int gamepad_start(struct a2600session *s)
     if (!g) { SDL_QuitSubSystem(SDL_INIT_GAMEPAD); return -1; }
     g->session = s;
     pthread_mutex_init(&g->lock, NULL);
-    if (pthread_create(&g->thread, NULL, thread_main, g) != 0) {
+    /* An explicit stack: the platform default is 512 KB on macOS, and SDL's
+     * HID enumeration runs on this thread. */
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 4u << 20);
+    if (pthread_create(&g->thread, &attr, thread_main, g) != 0) {
+        pthread_attr_destroy(&attr);
         session_set_error(s, "gamepad thread could not start");
         pthread_mutex_destroy(&g->lock);
         free(g);
         SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
         return -1;
     }
+    pthread_attr_destroy(&attr);
     g->running = 1;
     g_state = g;
     s->gamepad = g;

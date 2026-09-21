@@ -44,6 +44,8 @@
 #include <thread>
 #include <vector>
 
+#include <pthread.h>
+
 #include "bspf.hxx"
 #include "Event.hxx"
 #include "EventHandlerConstants.hxx"
@@ -167,8 +169,15 @@ class StellaHost
     Config myConfig;
 
     std::unique_ptr<OSystemFNGO> myOSystem;
-    std::thread myThread;
+    // A pthread rather than a std::thread so the stack size is explicit:
+    // std::thread takes the platform default, which is 512 KB on macOS --
+    // Stella's own frontend runs the emulator on the 8 MB main thread and
+    // was never sized for less.
+    pthread_t myThread{};
+    bool myThreadStarted{false};
     std::thread::id myThreadId;
+    static void* threadEntry(void* arg);
+    void threadBody(std::promise<std::string>& ready);
     std::atomic<bool> myRunning{false};
     std::atomic<bool> myQuit{false};
     std::atomic<EventHandlerState> myState{EventHandlerState::NONE};

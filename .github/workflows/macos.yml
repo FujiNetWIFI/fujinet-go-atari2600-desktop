@@ -73,3 +73,19 @@ jobs:
       - name: Test
         working-directory: build
         run: ctest --output-on-failure
+
+      # A crash on a Mac we cannot sit at is only diagnosable with a
+      # backtrace: re-run every failing test under lldb and print it.
+      - name: Backtraces for failed tests
+        if: failure()
+        working-directory: build
+        run: |
+          xcodebuild -version | head -1; uname -a
+          for t in $(ctest -N | sed -n 's/^ *Test *#[0-9]*: *//p'); do
+            exe=$(ctest -V -R "^$t$" -N 2>/dev/null | sed -n 's/^[0-9]*: Test command: *//p' | head -1 | tr -d '"')
+            [ -x "$exe" ] || continue
+            echo "=== $t ($exe) ==="
+            timeout 120 lldb --batch \
+              -o "settings set target.env-vars DYLD_LIBRARY_PATH=/tmp/sdl3-install/lib" \
+              -o "run" -o "bt all" -o "quit" -- "$exe" 2>&1 | tail -80 || true
+          done
