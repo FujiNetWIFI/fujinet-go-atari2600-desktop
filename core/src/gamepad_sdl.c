@@ -246,6 +246,7 @@ static void close_pad(gamepad_state *g, SDL_JoystickID id)
 static int effective_port_locked(gamepad_state *g, int idx)
 {
     int assign[MAX_PADS], i, port;
+    for (i = 0; i < MAX_PADS; i++) assign[i] = -1;
     for (i = 0; i < g->npads; i++) assign[i] = g->pads[i].assign;
     for (port = 0; port < 2; port++)
         if (a2600_pad_for_port(assign, g->npads, port) == idx) return port;

@@ -5,14 +5,17 @@
 # Stella is built here the way every sibling app builds its emulator: the
 # sources are copied and compiled as if they were ours, with our own flags,
 # rather than driving Stella's configure + Makefile (which is SDL-centric and
-# produces an executable, not a library). Nothing is patched. ONE file is
-# overridden: src/common/MediaFactory.hxx, the header that selects which
+# produces an executable, not a library). Nothing is patched. THREE files are
+# overridden. src/common/MediaFactory.hxx, the header that selects which
 # OSystem/FBBackend/Sound/EventHandler implementation a build gets. Stella
 # picks by BSPF_* / __LIB_RETRO__ / SDL_SUPPORT; ours (core/stella/host/
 # MediaFactory.hxx) picks the FujiNet Go host classes instead, exactly as
 # Stella's own libretro port plugs in. The override is a copy over the staged
 # file, so the staged tree still builds with Stella's include layout and a
-# diff against the pinned checkout shows exactly one changed file.
+# diff against the pinned checkout shows exactly the overridden files. The
+# others are src/os/windows/FSNodeWINDOWS.hxx, a three-line portability fix
+# for libstdc++, and src/emucore/fujinet/FujiNetLink.cxx, a one-line Winsock
+# fix (see STELLA_SHADOW_FSNODEWINDOWS / STELLA_SHADOW_FUJINETLINK below).
 #
 # What is NOT staged (see the exclude list): Stella's own frontends (src/os/
 # libretro, the SDL backends stay but are never compiled), the Xcode project,
@@ -27,6 +30,17 @@
 
 set(STELLA_GEN "${CMAKE_SOURCE_DIR}/core/stella-generated")
 set(STELLA_SHADOW_MEDIAFACTORY "${CMAKE_SOURCE_DIR}/core/stella/host/MediaFactory.hxx")
+# The second override: src/os/windows/FSNodeWINDOWS.hxx opens its streams
+# from a std::wstring, an MSVC-only overload; the shadow passes a
+# std::filesystem::path, which libstdc++ (MSYS2/mingw-w64, the Windows
+# release toolchain) and MSVC both take. Nothing else differs.
+set(STELLA_SHADOW_FSNODEWINDOWS "${CMAKE_SOURCE_DIR}/core/stella/host/FSNodeWINDOWS.hxx")
+# The third: src/emucore/fujinet/FujiNetLink.cxx waits for a non-blocking
+# connect on the write set only; Winsock reports a refused connect on the
+# exception set, so on Windows every attempt with no FujiNet listening
+# waited out the 3 s timeout on the emulation thread. The shadow adds the
+# exception set (a no-op on POSIX). Nothing else differs.
+set(STELLA_SHADOW_FUJINETLINK "${CMAKE_SOURCE_DIR}/core/stella/host/FujiNetLink.cxx")
 
 option(STELLA_RESTAGE "Re-stage the Stella sources from the checkout" OFF)
 
@@ -69,7 +83,9 @@ if(GIT_EXECUTABLE)
 endif()
 file(SHA256 "${CMAKE_CURRENT_LIST_FILE}" _stage_hash)
 file(SHA256 "${STELLA_SHADOW_MEDIAFACTORY}" _shadow_hash)
-set(_stella_want "${STELLA_DIR}\n${_stella_head}\n${_stage_hash}\n${_shadow_hash}\n")
+file(SHA256 "${STELLA_SHADOW_FSNODEWINDOWS}" _shadow2_hash)
+file(SHA256 "${STELLA_SHADOW_FUJINETLINK}" _shadow3_hash)
+set(_stella_want "${STELLA_DIR}\n${_stella_head}\n${_stage_hash}\n${_shadow_hash}\n${_shadow2_hash}\n${_shadow3_hash}\n")
 
 set(_stella_have "")
 if(EXISTS "${STELLA_GEN}/.source-info")
@@ -93,9 +109,13 @@ if(STELLA_RESTAGE OR NOT _stella_have STREQUAL _stella_want
        PATTERN "src/lib/httplib" EXCLUDE
        PATTERN "src/lib/nanojpeg" EXCLUDE
        PATTERN "src/lib/tinyexif" EXCLUDE)
-  # The one override (see the header comment).
+  # The overrides (see the header comment).
   file(COPY_FILE "${STELLA_SHADOW_MEDIAFACTORY}"
        "${STELLA_GEN}/src/common/MediaFactory.hxx" ONLY_IF_DIFFERENT)
+  file(COPY_FILE "${STELLA_SHADOW_FSNODEWINDOWS}"
+       "${STELLA_GEN}/src/os/windows/FSNodeWINDOWS.hxx" ONLY_IF_DIFFERENT)
+  file(COPY_FILE "${STELLA_SHADOW_FUJINETLINK}"
+       "${STELLA_GEN}/src/emucore/fujinet/FujiNetLink.cxx" ONLY_IF_DIFFERENT)
   file(WRITE "${STELLA_GEN}/.source-info" "${_stella_want}")
 endif()
 

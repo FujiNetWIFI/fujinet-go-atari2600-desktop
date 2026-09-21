@@ -255,7 +255,7 @@ static void refresh_tia(DbgWin *w)
         "Ball      ENABL %d   VDELBL %d\n"
         "Playfield PF0 %02X  PF1 %02X  PF2 %02X   CTRLPF %02X   REF %d  SCORE %d  PRIORITY %d\n\n",
         t.colup0, t.colup1, t.colupf, t.colubk,
-        t.grp0, t.grp1, t.nusiz0, t.nusiz1, t.refp0, t.refp1, t.vdelp0, t.vdelp1,
+        t.graphics_p0, t.graphics_p1, t.nusiz0, t.nusiz1, t.refp0, t.refp1, t.vdelp0, t.vdelp1,
         t.enam0, t.enam1, t.resmp0, t.resmp1, t.enabl, t.vdelbl,
         t.pf0, t.pf1, t.pf2, t.ctrlpf, t.refpf, t.scorepf, t.pripf);
     len += g_snprintf(text + len, sizeof text - len,
@@ -948,6 +948,7 @@ void a2600_debugger_show(GtkWindow *parent, a2600session *session)
     gtk_window_set_title(w->win, "Debugger");
     gtk_window_set_default_size(w->win, 1100, 760);
     gtk_window_set_transient_for(w->win, parent);
+    gtk_window_set_application(w->win, gtk_window_get_application(parent));
     gtk_window_set_destroy_with_parent(w->win, TRUE);
     g_signal_connect(w->win, "close-request", G_CALLBACK(on_close), w);
     g_signal_connect(w->win, "destroy", G_CALLBACK(on_destroy), w);

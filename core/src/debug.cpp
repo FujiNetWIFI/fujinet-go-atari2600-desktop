@@ -52,11 +52,6 @@ struct a2600debug
 
 namespace {
 
-bool stopped(OSystem& os)
-{
-  return os.hasConsole() && os.eventHandler().state() == EventHandlerState::DEBUGGER;
-}
-
 // Every inspection needs the debugger's state locked; a running machine is
 // asked at a frame boundary by the job mechanism itself, so only the
 // "no console" case is refused.
@@ -329,7 +324,7 @@ extern "C" void a2600debug_tia_get(a2600debug* d, a2600debug_tia* out)
     out->nusiz0 = t.nusiz0(); out->nusiz1 = t.nusiz1();
     out->colup0 = t.coluP0(); out->colup1 = t.coluP1(); out->colupf = t.coluPF(); out->colubk = t.coluBK();
     out->ctrlpf = t.ctrlPF(); out->pf0 = t.pf0(); out->pf1 = t.pf1(); out->pf2 = t.pf2();
-    out->grp0 = t.grP0(); out->grp1 = t.grP1();
+    out->graphics_p0 = t.grP0(); out->graphics_p1 = t.grP1();
     out->pos_p0 = t.posP0(); out->pos_p1 = t.posP1(); out->pos_m0 = t.posM0(); out->pos_m1 = t.posM1(); out->pos_bl = t.posBL();
     out->hm_p0 = t.hmP0(); out->hm_p1 = t.hmP1(); out->hm_m0 = t.hmM0(); out->hm_m1 = t.hmM1(); out->hm_bl = t.hmBL();
     out->audc0 = t.audC0(); out->audc1 = t.audC1(); out->audf0 = t.audF0(); out->audf1 = t.audF1();

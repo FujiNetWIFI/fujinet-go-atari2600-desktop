@@ -468,7 +468,7 @@ void DebuggerWindow::refreshTia()
     auto hx = [](int v) { return QStringLiteral("%1").arg(v, 2, 16, QLatin1Char('0')).toUpper(); };
     s += QStringLiteral("Colours   COLUP0 %1   COLUP1 %2   COLUPF %3   COLUBK %4\n").arg(hx(t.colup0), hx(t.colup1), hx(t.colupf), hx(t.colubk));
     s += QStringLiteral("Players   GRP0 %1  GRP1 %2   NUSIZ0 %3  NUSIZ1 %4   REFP0 %5  REFP1 %6   VDELP0 %7  VDELP1 %8\n")
-        .arg(hx(t.grp0), hx(t.grp1), hx(t.nusiz0), hx(t.nusiz1)).arg(t.refp0).arg(t.refp1).arg(t.vdelp0).arg(t.vdelp1);
+        .arg(hx(t.graphics_p0), hx(t.graphics_p1), hx(t.nusiz0), hx(t.nusiz1)).arg(t.refp0).arg(t.refp1).arg(t.vdelp0).arg(t.vdelp1);
     s += QStringLiteral("Missiles  ENAM0 %1  ENAM1 %2   RESMP0 %3  RESMP1 %4\nBall      ENABL %5   VDELBL %6\n")
         .arg(t.enam0).arg(t.enam1).arg(t.resmp0).arg(t.resmp1).arg(t.enabl).arg(t.vdelbl);
     s += QStringLiteral("Playfield PF0 %1  PF1 %2  PF2 %3   CTRLPF %4   REF %5  SCORE %6  PRIORITY %7\n\n")

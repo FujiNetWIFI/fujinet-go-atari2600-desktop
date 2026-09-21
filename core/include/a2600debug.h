@@ -89,7 +89,7 @@ void a2600debug_riot_set(a2600debug *d, int reg, int value);
 /* ---- TIA --------------------------------------------------------------------- */
 typedef struct {
     uint8_t nusiz0, nusiz1, colup0, colup1, colupf, colubk, ctrlpf;
-    uint8_t pf0, pf1, pf2, grp0, grp1;
+    uint8_t pf0, pf1, pf2, graphics_p0, graphics_p1;
     uint8_t pos_p0, pos_p1, pos_m0, pos_m1, pos_bl;
     uint8_t hm_p0, hm_p1, hm_m0, hm_m1, hm_bl;
     uint8_t audc0, audc1, audf0, audf1, audv0, audv1;
