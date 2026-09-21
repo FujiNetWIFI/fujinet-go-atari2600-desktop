@@ -348,6 +348,8 @@ static void build_window(GtkWindow *parent)
     g_window = adw_window_new();
     gtk_window_set_title(GTK_WINDOW(g_window), "Keypads");
     gtk_window_set_transient_for(GTK_WINDOW(g_window), parent);
+    /* Same app-id as the main window, so the shell groups and icons it. */
+    gtk_window_set_application(GTK_WINDOW(g_window), gtk_window_get_application(parent));
     gtk_window_set_destroy_with_parent(GTK_WINDOW(g_window), TRUE);
     gtk_window_set_resizable(GTK_WINDOW(g_window), FALSE);
     g_signal_connect(g_window, "close-request", G_CALLBACK(on_close), NULL);

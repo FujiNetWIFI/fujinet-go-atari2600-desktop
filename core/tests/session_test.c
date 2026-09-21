@@ -83,10 +83,19 @@ int main(void)
     check(wait_frames(s, &serial, 30, 5000), "frames arrive");
     {
         static uint32_t px[A2600SESSION_FB_WIDTH * A2600SESSION_FB_MAX_HEIGHT];
-        uint64_t z = 0; int distinct = 0; uint32_t last = 0; int i;
+        uint64_t z = 0; int distinct = 0; uint32_t last = 0; int i, tries;
         check(a2600session_copy_frame(s, px, &h, &z) == 1, "a forced copy (serial 0) always copies");
         check(h >= 100 && h <= A2600SESSION_FB_MAX_HEIGHT, "frame height is sane");
-        for (i = 0; i < A2600SESSION_FB_WIDTH * h; i++) if (px[i] != last) { distinct++; last = px[i]; }
+        /* Wait for the picture: a loaded CI runner can take seconds to
+         * reach the CONFIG client's first paint. */
+        for (tries = 0; tries < 50; tries++) {
+            distinct = 0; last = 0;
+            for (i = 0; i < A2600SESSION_FB_WIDTH * h; i++) if (px[i] != last) { distinct++; last = px[i]; }
+            if (distinct > 50) break;
+            sleep_ms(100);
+            z = 0;
+            a2600session_copy_frame(s, px, &h, &z);
+        }
         check(distinct > 50, "the CONFIG client painted something");
         check(a2600session_copy_frame(s, px, &h, &z) == 0 || 1, "an unchanged serial copies nothing (or a new frame arrived)");
     }

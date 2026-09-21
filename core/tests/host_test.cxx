@@ -54,7 +54,7 @@ namespace {
     return false;
   }
 
-  bool frameNonBlank(StellaHost& host)
+  bool frameNonBlankNow(StellaHost& host)
   {
     std::vector<uInt32> px; StellaHost::FrameInfo info; uInt64 s = 0;
     if(!host.copyFrame(px, info, &s)) return false;
@@ -64,6 +64,21 @@ namespace {
     uInt32 distinct = 0; uInt32 last = px[0];
     for(uInt32 p : px) if(p != last) { ++distinct; last = p; }
     return distinct > 50;
+  }
+
+  // The CONFIG client paints within its first few dozen frames on an idle
+  // machine; on a loaded CI runner those frames can take seconds, so wait
+  // for the picture rather than asserting it at a fixed frame count.
+  bool frameNonBlank(StellaHost& host, int timeoutMs = 5000)
+  {
+    const auto start = std::chrono::steady_clock::now();
+    for(;;)
+    {
+      if(frameNonBlankNow(host)) return true;
+      if(std::chrono::steady_clock::now() - start > std::chrono::milliseconds(timeoutMs))
+        return false;
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
   }
 }
 

@@ -87,6 +87,7 @@ void a2600_fujilog_show(GtkWindow *parent, a2600session *session)
     gtk_window_set_title(lw->win, "FujiNet Console Log");
     gtk_window_set_default_size(lw->win, 820, 560);
     gtk_window_set_transient_for(lw->win, parent);
+    gtk_window_set_application(lw->win, gtk_window_get_application(parent));
 
     {
         GtkWidget *toolbar = adw_toolbar_view_new();
@@ -124,6 +125,7 @@ void a2600_fujiconfig_show(GtkWindow *parent, a2600session *session)
     gtk_window_set_title(existing, "FujiNet Configuration");
     gtk_window_set_default_size(existing, 1000, 760);
     gtk_window_set_transient_for(existing, parent);
+    gtk_window_set_application(existing, gtk_window_get_application(parent));
     toolbar = adw_toolbar_view_new();
     adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar), adw_header_bar_new());
     adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(toolbar), web);

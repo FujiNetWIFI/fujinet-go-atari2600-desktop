@@ -1,0 +1,132 @@
+fujinet-go-atari2600-desktop -- milestone log
+=============================================
+
+The plan is the family's (see fujinet-go-adam-desktop/PORTING.md): one C API
+in core/, four native frontends, FujiNet in-process, one shared settings
+store, a native debugger everywhere, no panels visible at startup,
+clone-and-build CI. Nothing below is marked done on "it compiles".
+
+M0  scaffold                                                          [x]
+  [x] root CMakeLists (VERSION 0.1.0, FRONTEND switch, icon loop, CPack
+      DEB/RPM/TGZ), .gitignore, LICENSE (GPL-3.0-or-later)
+  [x] cmake/Dependencies.cmake: a2600_provide_dependency(); pins STELLA
+      (tschak909/stella add-fujinet-support @ 65bd725e) and FUJINET
+      (FujiNetWIFI/fujinet-firmware @ c68e8630, the commit the INTV port
+      pins: master + TCP_NODELAY); STELLA_SRC / FUJINET_SRC dev overrides
+  [x] cmake/StageStella.cmake: stages Stella's src/ into
+      core/stella-generated keyed by pin + staging-file + shadow hashes
+  [x] cmake/FujiNetRuntime.cmake + tools/fujinet/build-fujinet-desktop.sh
+      (PC target RS232, BoIP 11504, web UI 11505) + the RS232 default-hosts
+      patch, carried from the ColecoVision port
+  [x] icons: tools/icons/make-icons.py renders the family mark INVERTED
+      (outer discs and lines black, centre disc white) on #ffa645 to
+      hicolor PNGs, .icns and app.ico
+  [x] CI borrowed from the family: linux, windows, flatpak, macos, release.
+      macos.yml and release.yml's macos-package run a two-leg matrix
+      {arm64: macos-latest, x86_64: macos-15-intel} and confirm uname -m
+      matches the leg; the release uploads one zip per architecture
+
+M1  headless Stella core (the risk retirer)                          [x]
+  [x] stella_core static library from the staged tree: emucore, common,
+      debugger (+yacc), gui and debugger/gui (compiled because every
+      Cart*.hxx pulls its widget under DEBUGGER_SUPPORT; they render
+      offscreen and are never shown), FSNode for the platform, and our host
+      classes. Defines SOUND_SUPPORT DEBUGGER_SUPPORT GUI_SUPPORT
+      WINDOWED_SUPPORT VCS_CART_HOST_MAPPER FUJINET_SUPPORT + BSPF_*. No
+      SDL, libpng, zlib, sqlite, httplib, cheats
+  [x] core/stella/host: MediaFactory.hxx shadow selecting OSystemFNGO /
+      FBBackendFNGO / FBSurfaceFNGO / SoundFNGO / EventHandlerFNGO
+  [x] StellaHost: one thread owns Stella; jobs via withStella(); per-frame
+      tia.update() until newFramePending; breakpoints -> Debugger::start()
+      offscreen; frames published from the TIASurface; audio through
+      Stella's own resamplers; console replacement disconnects the old
+      CartridgeFUJI first (BoIP backlog is 1)
+  [x] host_test: CONFIG boots, 60 frames in ~1 s, non-blank frame, break /
+      step / frame / tia / break / run, reboot recreates the console and
+      its debugger. debug_test: the C debugger contract end to end
+  Gotchas met on the way (all fixed): CompositeKVRJsonAdapter wants an
+  atomic repository (properties use the Noop one); kExitDebugger is a
+  string_view; CpuDebug has no ps() getter (PS composed from the flags);
+  the CONFIG cart has 7 selectable banks and the PC can be in bank 7; the
+  help text is > 4 KB; completions come from BOTH DebuggerParser and
+  Debugger
+
+M2  session + FujiNet in-process                                     [x]
+  [x] a2600session: settings, paths, media, fujinet_runtime (dlopen'd
+      libfujinet, web UI bind from the family's entry wrapper), SDL audio,
+      lifecycle. FujiNet first, wait for 11504, then the console
+  [x] fujibus_smoke: libfujinet up, CartridgeFUJI reports the link up,
+      and again after a reboot to CONFIG
+
+M3  input                                                           [x]
+  [x] bindings.c: flat target table (per port: joystick, paddles, driving,
+      keypad; console switches; system actions), X11 keysyms, steal-on-
+      rebind reporting EVERY victim (Space drives three left-port fires by
+      default), packed "bindings" setting
+  [x] hid_keys.c: evdev / Win scancode / macOS keycode -> keysym
+  [x] gamepad_sdl.c: SDL3 thread, hotplug on SDL_EVENT_{JOYSTICK,GAMEPAD}_
+      {ADDED,REMOVED}, raw-joystick fallback, capture for Map mode, type-
+      dependent mapping (joystick / paddles analog / driving analog /
+      keypad only through explicit bindings), generation counter
+  [x] live controller types: Properties Controller_Left/Right +
+      Console::setControllers + propSet().insert, reapplied after
+      cartridgeSwapped; detected type exposed for the "Auto" label
+  [x] session_test, bindings_test, gamepad_test, media_test green
+
+M4  GNOME frontend (GTK4 / libadwaita)                              [x]
+  [x] display on the frame clock (4:3 letterbox, 2:1 pixels), Machine /
+      View / FujiNet menus, Preferences (TV format, per-port type with the
+      detected type shown, analog switches, gamepad ports, volume, host),
+      keypad window (both keypads, fire rows, console row, Map row),
+      debugger window (Prompt with Tab completion, CPU & RAM, Disassembly
+      with click-to-toggle breakpoints and bank selector, TIA with the
+      picture, I/O, Breaks & Traps, States & Cart), FujiNet log and
+      config, drag-and-drop, ESC reboots to CONFIG
+  [x] run on the live desktop: "FujiNet connected" in the header, CONFIG
+      client on screen
+
+M5  KDE frontend (Qt6 Widgets)                                      [x]
+  [x] same scope as GNOME. Keypad is a Qt::Dialog with a SetFixedSize
+      layout so a tiling compositor floats it; the 3x4 blocks are tight and
+      centred over the fire rows; the console row wraps to two rows of
+      three when the font needs wider buttons, so nothing is elided
+  [x] run on the live desktop beside the GNOME one
+
+M6  Windows frontend (Win32 / GDI)                                  [x]
+  [x] main.c (DwmFlush present thread, StretchDIBits, menus, settings and
+      log windows, drag-and-drop, WM_ACTIVATE releases held keys),
+      keypad_window.c (owner-drawn HELD buttons with mouse capture, fixed-
+      size tool window, centred 3x4 blocks, Map mode with key and gamepad
+      capture), dbg_window.c (tab control, edit subclassing for Enter and
+      Tab completion, the same seven tabs)
+  [x] cross-built with cmake/toolchains/mingw-w64.cmake + SDL's prebuilt
+      SDL3-devel-3.4.12-mingw archive (WITH_FUJINET=OFF); runs under Wine
+      with the keypad floating and the debugger open; core tests pass
+      under Wine
+  Two real Stella-for-Windows bugs found by the cross-build, fixed as
+  shadow files in core/stella/host (see COMPLIANCE.md; both worth
+  upstreaming):
+  [x] FSNodeWINDOWS.hxx opens streams from a std::wstring -- an MSVC-only
+      overload; libstdc++ (MSYS2 / mingw-w64) has only the C++17 path one
+  [x] FujiNetLink::waitFor selected on the write set only; Winsock reports
+      a refused non-blocking connect on the EXCEPTION set, so with no
+      FujiNet listening every attempt waited out the 3 s timeout and the
+      CONFIG client's screen stayed blank for seconds (host_test and
+      session_test caught it under Wine)
+  Also: the a2600debug_tia fields grp0/grp1 are graphics_p0/graphics_p1 --
+  <dlgs.h> defines grp1 as a dialog resource id
+
+M7  macOS frontend (AppKit)                                         [x]
+  [x] main.m / AppDelegate.m / DisplayView.m (CVDisplayLink) / KeyForward.m
+      (kVK_* through the HID table) / keypad (NSPanel, utility window,
+      fixed size, floating level) / debugger (NSTabView, seven tabs),
+      Info.plist.in, CMakeLists.txt bundling the .icns and packing the
+      FujiNet runtime beside the executable
+  [ ] compiled only by CI (macos.yml, both architectures) -- written on
+      Linux, as every macOS frontend in the family was
+
+M8  packaging, docs, release                                         [~]
+  [x] README.md, COMPLIANCE.md, this log
+  [x] flatpak manifests (GNOME with WebKitGTK, KDE opening the web UI in
+      the browser), NSIS installer, CPack
+  [ ] push, watch the five workflows, tag v0.1.0 -- the maintainer's call

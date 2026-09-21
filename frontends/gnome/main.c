@@ -40,6 +40,17 @@ const char *a2600_icon_name(void)
     return name;
 }
 
+/* The keypad, debugger and log windows are hidden rather than destroyed
+ * and belong to the application (so the shell groups them with it), which
+ * means the application would outlive its main window. Closing the main
+ * window is quitting. */
+static gboolean on_main_close(GtkWindow *win, gpointer user_data)
+{
+    (void)win;
+    g_application_quit(G_APPLICATION(user_data));
+    return FALSE;
+}
+
 static void on_activate(AdwApplication *app, gpointer user_data)
 {
     a2600session_start_opts opts;
@@ -56,6 +67,7 @@ static void on_activate(AdwApplication *app, gpointer user_data)
     }
 
     win = a2600_window_new(app, g_session);
+    g_signal_connect(win, "close-request", G_CALLBACK(on_main_close), app);
 
     a2600session_default_opts(g_session, &opts);
     if (g_cart_arg)
