@@ -61,6 +61,10 @@ void PadButton::leaveEvent(QEvent *e)
 
 /* ---- KeypadWindow ---------------------------------------------------------- */
 
+/* Key and wide-button sizes, in pixels: fixed, so the panel is the same
+ * shape everywhere (the numeric keys are what the user is looking at). */
+static constexpr int kWideWidth = 130;
+
 KeypadWindow::KeypadWindow(a2600session *session, QWidget *parent)
     /* A dialog-type window, so a tiling compositor floats it: it is a
      * panel of fixed-size buttons, and a keypad stretched across half a
@@ -77,14 +81,30 @@ KeypadWindow::KeypadWindow(a2600session *session, QWidget *parent)
     ports->addWidget(buildController(1));
     root->addLayout(ports);
 
+    /* The console switches: one row of six at the standard width when the
+     * font lets their labels fit it, otherwise two rows of three at a
+     * width the labels need. Either way nothing is elided and the window
+     * stays the width of the two controller boxes. */
     auto *console = new QGroupBox(QStringLiteral("Console"));
-    auto *crow = new QHBoxLayout(console);
-    crow->addWidget(control(QStringLiteral("Select"), A2600_TARGET_SWITCH(A2600_SW_SELECT), true));
-    crow->addWidget(control(QStringLiteral("Reset"), A2600_TARGET_SWITCH(A2600_SW_RESET), true));
-    crow->addWidget(control(QStringLiteral("Color / B&&W"), A2600_TARGET_SWITCH(A2600_SW_COLOR_BW), true));
-    crow->addWidget(control(QStringLiteral("Left Diff"), A2600_TARGET_SWITCH(A2600_SW_LEFT_DIFF), true));
-    crow->addWidget(control(QStringLiteral("Right Diff"), A2600_TARGET_SWITCH(A2600_SW_RIGHT_DIFF), true));
-    crow->addWidget(control(QStringLiteral("Reboot to CONFIG"), A2600_TARGET_SYSACT(A2600_SYSACT_REBOOT_CONFIG), true));
+    auto *cgrid = new QGridLayout(console);
+    cgrid->setSpacing(6);
+    const int consoleWidth = qMax(kWideWidth, console->fontMetrics().horizontalAdvance(QStringLiteral("Reboot to CONFIG")) + 24);
+    const int perRow = consoleWidth > kWideWidth ? 3 : 6;
+    static const struct { const char *face; int target; } switches[6] = {
+        { "Select", A2600_TARGET_SWITCH(A2600_SW_SELECT) },
+        { "Reset", A2600_TARGET_SWITCH(A2600_SW_RESET) },
+        { "Color / B&&W", A2600_TARGET_SWITCH(A2600_SW_COLOR_BW) },
+        { "Left Diff", A2600_TARGET_SWITCH(A2600_SW_LEFT_DIFF) },
+        { "Right Diff", A2600_TARGET_SWITCH(A2600_SW_RIGHT_DIFF) },
+        { "Reboot to CONFIG", A2600_TARGET_SYSACT(A2600_SYSACT_REBOOT_CONFIG) },
+    };
+    cgrid->setColumnStretch(0, 1);
+    cgrid->setColumnStretch(perRow + 1, 1);
+    for (int i = 0; i < 6; ++i) {
+        PadButton *b = control(QString::fromUtf8(switches[i].face), switches[i].target, true);
+        b->setFixedWidth(consoleWidth);
+        cgrid->addWidget(b, i / perRow, 1 + i % perRow, Qt::AlignCenter);
+    }
     root->addWidget(console);
 
     auto *maprow = new QHBoxLayout;
@@ -117,7 +137,7 @@ KeypadWindow::KeypadWindow(a2600session *session, QWidget *parent)
 PadButton *KeypadWindow::control(const QString &face, int target, bool wide)
 {
     auto *b = new PadButton(face, target);
-    b->setFixedSize(wide ? 130 : 72, 44);
+    b->setFixedSize(wide ? kWideWidth : 72, 44);
     connect(b, &PadButton::pressedTarget, this, &KeypadWindow::onPressed);
     connect(b, &PadButton::releasedTarget, this, &KeypadWindow::onReleased);
     m_controls.push_back(b);
@@ -132,17 +152,30 @@ QWidget *KeypadWindow::buildController(int port)
     m_typeLabel[port]->setAlignment(Qt::AlignHCenter);
     v->addWidget(m_typeLabel[port]);
 
+    /* The 3x4 pad is a tight block of fixed-size keys, centred: the grid
+     * must not spread to the width of the fire-button row beneath it, or the
+     * digits drift apart. Centring is done by flanking stretch, and the
+     * grid's own spacing is the only gap between keys. */
     static const char *const faces[12] = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#" };
     auto *grid = new QGridLayout;
+    grid->setSpacing(6);
+    grid->setSizeConstraint(QLayout::SetFixedSize);
     for (int i = 0; i < 12; ++i)
         grid->addWidget(control(QString::fromUtf8(faces[i]), A2600_TARGET_PORT(port, A2600_ACT_KEY_1 + i), false),
-                        i / 3, i % 3);
-    v->addLayout(grid);
+                        i / 3, i % 3, Qt::AlignCenter);
+    auto *gridRow = new QHBoxLayout;
+    gridRow->addStretch();
+    gridRow->addLayout(grid);
+    gridRow->addStretch();
+    v->addLayout(gridRow);
 
     auto *fires = new QHBoxLayout;
+    fires->setSpacing(6);
+    fires->addStretch();
     fires->addWidget(control(QStringLiteral("Fire"), A2600_TARGET_PORT(port, A2600_ACT_JOY_FIRE), true));
     fires->addWidget(control(QStringLiteral("Paddle A"), A2600_TARGET_PORT(port, A2600_ACT_PADDLE_A_FIRE), true));
     fires->addWidget(control(QStringLiteral("Paddle B"), A2600_TARGET_PORT(port, A2600_ACT_PADDLE_B_FIRE), true));
+    fires->addStretch();
     v->addLayout(fires);
     return box;
 }
