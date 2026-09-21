@@ -62,9 +62,12 @@ jobs:
           cmake --build /tmp/sdl3-build
           cmake --install /tmp/sdl3-build
 
+      # RelWithDebInfo rather than the default Release: same optimisation
+      # class, but a crash on a runner we cannot sit at gets line numbers.
       - name: Configure
         run: |
           cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_PREFIX_PATH=/tmp/sdl3-install
 
       - name: Build
@@ -85,7 +88,8 @@ jobs:
             exe=$(ctest -V -R "^$t$" -N 2>/dev/null | sed -n 's/^[0-9]*: Test command: *//p' | head -1 | tr -d '"')
             [ -x "$exe" ] || continue
             echo "=== $t ($exe) ==="
-            timeout 120 lldb --batch \
+            # (no coreutils `timeout` on macOS; the crashes are immediate)
+            lldb --batch \
               -o "settings set target.env-vars DYLD_LIBRARY_PATH=/tmp/sdl3-install/lib" \
-              -o "run" -o "bt all" -o "quit" -- "$exe" 2>&1 | tail -80 || true
+              -o "run" -o "bt all" -o "register read" -o "quit" -- "$exe" 2>&1 | tail -120 || true
           done
