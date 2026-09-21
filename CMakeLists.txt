@@ -4,10 +4,14 @@ cmake_minimum_required(VERSION 3.20)
 # bundle's minimum macOS version to whatever SDK the CI runner's Xcode ships
 # -- e.g. the macos-latest runner's SDK can be newer than a real tester's OS,
 # which produced "You can't use this version of the application ... with this
-# version of macOS" on an M1 Mac for the sibling MSX port. 11.0 is the oldest
-# macOS that shipped on Apple Silicon.
+# version of macOS" on an M1 Mac for the sibling MSX port. 13.3 (Ventura) is
+# the oldest macOS whose libc++ has floating-point std::to_chars, which
+# Stella's std::format("{:.1f}") calls need; the siblings ship 11.0, but
+# they do not embed a C++23 emulator. (Floating-point std::from_chars is
+# gated even later, macOS 26, and is worked around in core/stella/host/
+# Variant.hxx instead.)
 if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin" AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
-  set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "13.3" CACHE STRING "Minimum macOS version")
 endif()
 
 # The version lives here and nowhere else: the About boxes, the macOS bundle

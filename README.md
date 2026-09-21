@@ -81,7 +81,9 @@ forces it. `-DFRONTEND=none` builds just the core and its tests;
 `-DWITH_FUJINET=OFF` skips the firmware build (the machine boots the CONFIG
 client reporting the link down).
 
-Stella is C++23: GCC 13+, Clang 16+, or MSYS2 UCRT64's GCC.
+Stella is C++23: GCC 13+, Clang 16+, or MSYS2 UCRT64's GCC. The macOS
+bundles need macOS 13.3 or later (the first libc++ with floating-point
+`std::to_chars`, which Stella's `std::format` calls use).
 
 ### Cross-building Windows on Linux
 

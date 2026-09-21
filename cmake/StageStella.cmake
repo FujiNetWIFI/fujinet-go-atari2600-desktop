@@ -5,7 +5,7 @@
 # Stella is built here the way every sibling app builds its emulator: the
 # sources are copied and compiled as if they were ours, with our own flags,
 # rather than driving Stella's configure + Makefile (which is SDL-centric and
-# produces an executable, not a library). Nothing is patched. THREE files are
+# produces an executable, not a library). Nothing is patched. FOUR files are
 # overridden. src/common/MediaFactory.hxx, the header that selects which
 # OSystem/FBBackend/Sound/EventHandler implementation a build gets. Stella
 # picks by BSPF_* / __LIB_RETRO__ / SDL_SUPPORT; ours (core/stella/host/
@@ -14,8 +14,9 @@
 # file, so the staged tree still builds with Stella's include layout and a
 # diff against the pinned checkout shows exactly the overridden files. The
 # others are src/os/windows/FSNodeWINDOWS.hxx, a three-line portability fix
-# for libstdc++, and src/emucore/fujinet/FujiNetLink.cxx, a one-line Winsock
-# fix (see STELLA_SHADOW_FSNODEWINDOWS / STELLA_SHADOW_FUJINETLINK below).
+# for libstdc++, src/emucore/fujinet/FujiNetLink.cxx, a one-line Winsock
+# fix, and src/common/Variant.hxx, a float-parsing fallback for Apple's
+# libc++ (see the STELLA_SHADOW_* variables below).
 #
 # What is NOT staged (see the exclude list): Stella's own frontends (src/os/
 # libretro, the SDL backends stay but are never compiled), the Xcode project,
@@ -41,6 +42,11 @@ set(STELLA_SHADOW_FSNODEWINDOWS "${CMAKE_SOURCE_DIR}/core/stella/host/FSNodeWIND
 # waited out the 3 s timeout on the emulation thread. The shadow adds the
 # exception set (a no-op on POSIX). Nothing else differs.
 set(STELLA_SHADOW_FUJINETLINK "${CMAKE_SOURCE_DIR}/core/stella/host/FujiNetLink.cxx")
+# The fourth: src/common/Variant.hxx parses floats with std::from_chars,
+# which Apple's libc++ gates behind macOS 26 (the Xcode 16 SDK has no
+# floating-point overload at all). On Apple the shadow parses with
+# strtof_l/strtod_l in the "C" locale; other platforms are untouched.
+set(STELLA_SHADOW_VARIANT "${CMAKE_SOURCE_DIR}/core/stella/host/Variant.hxx")
 
 option(STELLA_RESTAGE "Re-stage the Stella sources from the checkout" OFF)
 
@@ -85,7 +91,8 @@ file(SHA256 "${CMAKE_CURRENT_LIST_FILE}" _stage_hash)
 file(SHA256 "${STELLA_SHADOW_MEDIAFACTORY}" _shadow_hash)
 file(SHA256 "${STELLA_SHADOW_FSNODEWINDOWS}" _shadow2_hash)
 file(SHA256 "${STELLA_SHADOW_FUJINETLINK}" _shadow3_hash)
-set(_stella_want "${STELLA_DIR}\n${_stella_head}\n${_stage_hash}\n${_shadow_hash}\n${_shadow2_hash}\n${_shadow3_hash}\n")
+file(SHA256 "${STELLA_SHADOW_VARIANT}" _shadow4_hash)
+set(_stella_want "${STELLA_DIR}\n${_stella_head}\n${_stage_hash}\n${_shadow_hash}\n${_shadow2_hash}\n${_shadow3_hash}\n${_shadow4_hash}\n")
 
 set(_stella_have "")
 if(EXISTS "${STELLA_GEN}/.source-info")
@@ -116,6 +123,8 @@ if(STELLA_RESTAGE OR NOT _stella_have STREQUAL _stella_want
        "${STELLA_GEN}/src/os/windows/FSNodeWINDOWS.hxx" ONLY_IF_DIFFERENT)
   file(COPY_FILE "${STELLA_SHADOW_FUJINETLINK}"
        "${STELLA_GEN}/src/emucore/fujinet/FujiNetLink.cxx" ONLY_IF_DIFFERENT)
+  file(COPY_FILE "${STELLA_SHADOW_VARIANT}"
+       "${STELLA_GEN}/src/common/Variant.hxx" ONLY_IF_DIFFERENT)
   file(WRITE "${STELLA_GEN}/.source-info" "${_stella_want}")
 endif()
 

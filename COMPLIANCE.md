@@ -23,7 +23,7 @@ firmware) are compatible: the combined work is distributed under GPL-3.0.
 ## What is changed in Stella, and what is not
 
 Stella is compiled from its own sources with this project's flags; it is
-**not patched**. Three files are overridden in the staged tree, all kept in
+**not patched**. Four files are overridden in the staged tree, all kept in
 `core/stella/host/` and copied over the staged file by `cmake/StageStella.cmake`:
 
 - `src/common/MediaFactory.hxx` — the header that selects which
@@ -41,9 +41,15 @@ Stella is compiled from its own sources with this project's flags; it is
   Winsock (unlike POSIX) reports a refused connection. Without it, every
   connect attempt on Windows with no FujiNet listening waited out the 3 s
   timeout on the emulation thread. Worth sending upstream.
+- `src/common/Variant.hxx` — on Apple platforms only, the float and double
+  string parses use `strtof_l`/`strtod_l` in the "C" locale instead of
+  `std::from_chars`, which Apple's libc++ marks unavailable before macOS 26
+  (the Xcode 16 SDK has no floating-point overload at all). Upstream Stella
+  builds its own macOS binaries with a macOS 26 deployment target for this
+  reason; this app's bundles run on macOS 13.3 and later.
 
 A diff of `core/stella-generated/src` against the pinned checkout shows
-exactly those three files. Stella's SDL frontend, its image/zip/http/sqlite
+exactly those four files. Stella's SDL frontend, its image/zip/http/sqlite
 libraries and its cheat code support are staged but never compiled
 (`SDL_SUPPORT`, `IMAGE_SUPPORT`, `ZIP_SUPPORT`, `HTTP_LIB_SUPPORT`,
 `CHEATCODE_SUPPORT` are not defined), so the core library links against none

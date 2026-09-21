@@ -122,8 +122,12 @@ M7  macOS frontend (AppKit)                                         [x]
       fixed size, floating level) / debugger (NSTabView, seven tabs),
       Info.plist.in, CMakeLists.txt bundling the .icns and packing the
       FujiNet runtime beside the executable
-  [ ] compiled only by CI (macos.yml, both architectures) -- written on
-      Linux, as every macOS frontend in the family was
+  [x] compiled only by CI (macos.yml, both architectures) -- written on
+      Linux, as every macOS frontend in the family was. First CI run found
+      Apple's libc++ availability gates: floating-point std::to_chars needs
+      macOS 13.3 (deployment target raised from 11.0 to 13.3) and
+      floating-point std::from_chars needs macOS 26 (shadowed in
+      core/stella/host/Variant.hxx with strtof_l/strtod_l on Apple)
 
 M8  packaging, docs, release                                         [~]
   [x] README.md, COMPLIANCE.md, this log
