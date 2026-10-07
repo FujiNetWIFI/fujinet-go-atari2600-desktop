@@ -105,7 +105,7 @@ modules:
       # src/emucore/OSystem.cxx (the SENTINEL) already here.
       - type: git
         url: https://github.com/tschak909/stella
-        commit: 65bd725e62a6a8ce86acd3e1a01ca8e1cea86ac1
+        commit: 8bb59d1fa7b3492abeb3e01e55168fa570bc30c6
         dest: third_party/stella
       # Pinned exactly as cmake/Dependencies.cmake. a2600_provide_dependency()
       # skips its own fetch once it finds build.sh (the SENTINEL) already here.

@@ -10,7 +10,7 @@ M0  scaffold                                                          [x]
   [x] root CMakeLists (VERSION 0.1.0, FRONTEND switch, icon loop, CPack
       DEB/RPM/TGZ), .gitignore, LICENSE (GPL-3.0-or-later)
   [x] cmake/Dependencies.cmake: a2600_provide_dependency(); pins STELLA
-      (tschak909/stella add-fujinet-support @ 65bd725e) and FUJINET
+      (tschak909/stella add-fujinet-support @ 8bb59d1f) and FUJINET
       (FujiNetWIFI/fujinet-firmware @ c68e8630, the commit the INTV port
       pins: master + TCP_NODELAY); STELLA_SRC / FUJINET_SRC dev overrides
   [x] cmake/StageStella.cmake: stages Stella's src/ into
