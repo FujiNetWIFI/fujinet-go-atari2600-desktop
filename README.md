@@ -29,8 +29,10 @@ family (`fujinet-go-adam-desktop`, `-apple2-`, `-coco-`, `-msx-`, `-intv-`,
   (editable), Disassembly (DiStella listing per bank, click to toggle a
   breakpoint, follow PC), TIA (every register, the collision matrix, audio,
   and the picture being drawn), I/O (RIOT, timer, switches), Breaks & Traps,
-  and States & Cart (save/load slots, save-to-file through the native
-  picker, cartridge and link status). Stepping: Step, Trace, Scan+1,
+  States & Cart (save/load slots, save-to-file through the native
+  picker, cartridge and link status), and FujiNet (every FujiBus packet
+  between the 2600 and FujiNet, both ways, with hex; always recording,
+  even before the debugger opens). Stepping: Step, Trace, Scan+1,
   Frame+1, Rewind, Unwind, Run To.
 - **Controllers you choose.** Preferences sets each port to Auto (Stella's
   ROM database and controller detector), Joystick, Paddles, Driving or

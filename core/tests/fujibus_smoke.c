@@ -3,7 +3,8 @@
  * port, the CONFIG client boots, and the cartridge's link comes up. This is
  * the one test that proves the whole chain -- Stella's CartridgeFUJI and
  * FujiNetLink, the RS232 PC runtime's BoIP listener, the port numbers and
- * the start ordering -- rather than any one piece.
+ * the start ordering -- rather than any one piece. The debugger's FujiNet
+ * trace sees that traffic both ways.
  *
  * SKIPs (77) when no runtime library is available.
  *
@@ -15,6 +16,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "a2600debug.h"
 #include "a2600session.h"
 #include "test_tmpdir.h"
 
@@ -30,6 +32,8 @@ static void sleep_ms(int ms)
     struct timespec ts = { ms / 1000, (long)(ms % 1000) * 1000000L };
     nanosleep(&ts, NULL);
 }
+
+static a2600_fuji_packet trace[64];
 
 int main(void)
 {
@@ -76,6 +80,17 @@ int main(void)
     check(strstr(logbuf, "BoIP") != NULL || strstr(logbuf, "connected") != NULL || logbuf[0] != '\0',
           "the FujiNet console log has content");
     check(a2600session_cart_booted_game(s) == 0, "nothing has been booted yet");
+
+    /* the debugger's trace saw both ways of it, without a debugger open */
+    {
+        int n = a2600debug_fujinet_trace(a2600session_debugger(s), trace, 64), i, req = 0, rep = 0;
+        for (i = 0; i < n; i++) {
+            if (trace[i].to_host) rep++; else req++;
+            if (i < 6) printf("  %s\n", trace[i].text);
+        }
+        printf("trace: %d packets, %d requests, %d replies\n", n, req, rep);
+        check(req >= 1 && rep >= 1, "the FujiNet trace has a request and a reply");
+    }
 
     /* reboot: the old link must die before the new one dials in (backlog 1) */
     check(a2600session_reboot_to_config(s) == 0, "reboot to CONFIG");

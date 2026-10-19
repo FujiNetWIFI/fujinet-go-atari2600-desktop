@@ -15,6 +15,7 @@
 #include "BreakpointMap.hxx"
 #include "Cart.hxx"
 #include "CartDebug.hxx"
+#include "CartFUJI.hxx"
 #include "Console.hxx"
 #include "CpuDebug.hxx"
 #include "Debugger.hxx"
@@ -32,10 +33,12 @@
 #include "TrapArray.hxx"
 
 #include "StellaHost.hxx"
+#include "host/FNGOHostHooks.hxx"
 
 extern "C" {
 #include "session_internal.h"
 #include "a2600debug.h"
+#include "fuji_trace.h"
 }
 
 StellaHost* a2600session_host(a2600session* s);
@@ -48,6 +51,7 @@ struct a2600debug
   std::mutex mutex;
   std::string reason;
   int reasonAddr{-1};
+  fuji_trace* fuji{nullptr};
 };
 
 namespace {
@@ -69,6 +73,8 @@ int put(char* dst, int dstsz, const std::string& s)
   return snprintf(dst, static_cast<size_t>(dstsz), "%s", s.c_str());
 }
 
+a2600debug* gTraced = nullptr;     // the one the link's hook feeds
+
 } // namespace
 
 extern "C" a2600debug* a2600debug_get(a2600session* s)
@@ -79,6 +85,7 @@ extern "C" a2600debug* a2600debug_get(a2600session* s)
     auto* d = new a2600debug();
     d->session = s;
     d->host = a2600session_host(s);
+    d->fuji = fuji_trace_new();
     s->debugger = d;
   }
   return static_cast<a2600debug*>(s->debugger);
@@ -124,8 +131,29 @@ extern "C" unsigned a2600debug_generation(a2600debug* d)
 void a2600debug_destroy(a2600session* s)
 {
   if(!s || !s->debugger) return;
-  delete static_cast<a2600debug*>(s->debugger);
+  auto* d = static_cast<a2600debug*>(s->debugger);
+  if(gTraced == d)
+  {
+    FNGOHostHooks::onFujiNetBytes = nullptr;
+    gTraced = nullptr;
+  }
+  fuji_trace_free(d->fuji);
+  delete d;
   s->debugger = nullptr;
+}
+
+// The FujiNet trace is always on: it is cheap, and it is most useful about
+// what happened before anyone thought to look. Installed before Stella
+// starts, so no cartridge worker is running while the hook changes.
+void a2600debug_trace_install(a2600session* s)
+{
+  a2600debug* d = a2600debug_get(s);
+  if(!d) return;
+  gTraced = d;
+  fuji_trace* t = d->fuji;
+  FNGOHostHooks::onFujiNetBytes = [t](int dir, const uint8_t* buf, size_t len) {
+    fuji_trace_feed(t, dir, buf, len);
+  };
 }
 
 // Called by session.cpp's stop callback so windows see why.
@@ -692,4 +720,55 @@ extern "C" int a2600debug_save(a2600debug* d, const char* kind, const char* path
   ++d->generation;
   put(msg, msgsz, out);
   return 0;
+}
+
+// ---- FujiNet -------------------------------------------------------------------
+
+extern "C" int a2600debug_fujinet_trace(a2600debug* d, a2600_fuji_packet* out, int max)
+{
+  return d ? fuji_trace_copy(d->fuji, out, max) : 0;
+}
+
+extern "C" void a2600debug_fujinet_trace_clear(a2600debug* d)
+{
+  if(d) fuji_trace_clear(d->fuji);
+}
+
+extern "C" int a2600debug_fujinet_state(a2600debug* d, char* dst, int dstsz)
+{
+  if(!d || !dst || dstsz <= 0) return 0;
+  dst[0] = '\0';
+  a2600session* s = d->session;
+  if(!s->running) return put(dst, dstsz, "The 2600 is off\n");
+  std::string out;
+  if(s->fujinet_running)
+    out = "FujiNet    running\nBoIP       127.0.0.1:" + std::to_string(A2600SESSION_BOIP_PORT)
+          + "\nWeb admin  " + s->webui_url + "\n";
+  else
+    out = "FujiNet    off\n";
+  out += with_dbg(d, [&](OSystem& os) -> std::string {
+    if(!os.hasConsole()) return "Cartridge  none\n";
+    Cartridge& c = os.console().cartridge();
+    auto* fuji = dynamic_cast<CartridgeFUJI*>(&c);
+    std::string r = "Cartridge  " + c.name() + " (" + c.detectedType() + ")\n";
+    if(!fuji) return r + "Link       none: a local cartridge\n";
+    const std::string status = fuji->linkStatus();
+    r += "Link       ";
+    r += status.rfind("connected", 0) == 0 ? "up" : "down";
+    r += "\nStatus     " + status + "\n";
+    r += "Booted     ";
+    r += fuji->isFujiNetActive() ? "no game yet" : "a game (mailbox closed)";
+    r += "\n";
+    return r;
+  });
+  uint64_t packets[2] = { 0, 0 }, bytes[2] = { 0, 0 };
+  fuji_trace_totals(d->fuji, packets, bytes);
+  char line[200];
+  snprintf(line, sizeof line, "\nSince the 2600 started\n"
+           "  sent      %llu packets, %llu bytes\n"
+           "  received  %llu packets, %llu bytes\n",
+           (unsigned long long)packets[0], (unsigned long long)bytes[0],
+           (unsigned long long)packets[1], (unsigned long long)bytes[1]);
+  out += line;
+  return put(dst, dstsz, out);
 }

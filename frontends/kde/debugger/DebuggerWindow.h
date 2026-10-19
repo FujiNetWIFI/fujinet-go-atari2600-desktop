@@ -1,6 +1,7 @@
 /*
  * Debugger window (Qt6 Widgets) over Stella's own debugger engine, via
- * core/include/a2600debug.h. Mirrors the GNOME one tab for tab.
+ * core/include/a2600debug.h. Mirrors the GNOME one tab for tab, FujiNet's
+ * packet trace last.
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #pragma once
@@ -15,6 +16,8 @@
 #include <QTimer>
 #include <cstdint>
 #include <vector>
+
+class QTabWidget;
 
 extern "C" {
 #include "a2600debug.h"
@@ -41,6 +44,7 @@ private:
     QWidget *buildRiot();
     QWidget *buildBreaks();
     QWidget *buildStates();
+    QWidget *buildFujinet();
 
     void refreshAll();
     void refreshStatus();
@@ -50,6 +54,7 @@ private:
     void refreshTia();
     void refreshRiot();
     void refreshBps();
+    void refreshFujinet(bool force);
     void tick();
     void runPrompt();
     void appendPrompt(const QString &text);
@@ -92,4 +97,11 @@ private:
     QPlainTextEdit *m_bps = nullptr;
     QLineEdit *m_bpEntry = nullptr;
     QLabel *m_cartInfo = nullptr;
+
+    QTabWidget *m_tabs = nullptr;
+    int m_fujiPage = -1;
+    QLabel *m_fujiNote = nullptr;
+    QPlainTextEdit *m_fujiText = nullptr, *m_fujiState = nullptr;
+    uint64_t m_fujiLast = 0;
+    int m_fujiCount = -1;
 };

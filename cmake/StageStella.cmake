@@ -15,8 +15,9 @@
 # diff against the pinned checkout shows exactly the overridden files. The
 # others are src/os/windows/FSNodeWINDOWS.hxx, a three-line portability fix
 # for libstdc++, src/emucore/fujinet/FujiNetLink.cxx, a one-line Winsock
-# fix, and src/common/Variant.hxx, a float-parsing fallback for Apple's
-# libc++ (see the STELLA_SHADOW_* variables below).
+# fix plus the debugger's FujiNet trace taps, and src/common/Variant.hxx, a
+# float-parsing fallback for Apple's libc++ (see the STELLA_SHADOW_*
+# variables below).
 #
 # What is NOT staged (see the exclude list): Stella's own frontends (src/os/
 # libretro, the SDL backends stay but are never compiled), the Xcode project,
@@ -40,7 +41,10 @@ set(STELLA_SHADOW_FSNODEWINDOWS "${CMAKE_SOURCE_DIR}/core/stella/host/FSNodeWIND
 # connect on the write set only; Winsock reports a refused connect on the
 # exception set, so on Windows every attempt with no FujiNet listening
 # waited out the 3 s timeout on the emulation thread. The shadow adds the
-# exception set (a no-op on POSIX). Nothing else differs.
+# exception set (a no-op on POSIX). It also hands every byte sent and every
+# frame received to FNGOHostHooks::fujinetBytes (the debugger's FujiNet
+# trace): three calls, in readFrame(), transact() and sendBare(). Nothing
+# else differs.
 set(STELLA_SHADOW_FUJINETLINK "${CMAKE_SOURCE_DIR}/core/stella/host/FujiNetLink.cxx")
 # The fourth: src/common/Variant.hxx parses floats with std::from_chars,
 # which Apple's libc++ gates behind macOS 26 (the Xcode 16 SDK has no

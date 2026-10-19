@@ -1,9 +1,12 @@
 // FujiNet Go shadow of Stella's src/emucore/fujinet/FujiNetLink.cxx (see
-// cmake/StageStella.cmake). One change, in waitFor(): the connect wait also
+// cmake/StageStella.cmake). Two changes. In waitFor(): the connect wait also
 // selects on the exception set, which is where Winsock reports a refused
 // non-blocking connect. Without it every connect attempt on Windows with no
 // FujiNet listening waits out CONNECT_TIMEOUT_MS (3 s) on the emulation
 // thread: the CONFIG client's screen stays blank and the machine runs slow.
+// And readFrame(), transact() and sendBare() hand every byte sent and every
+// frame received to FNGOHostHooks::fujinetBytes, the debugger's FujiNet
+// trace.
 //============================================================================
 //
 //   SSSS    tt          lll  lll
@@ -40,6 +43,7 @@
 
 #include "Logger.hxx"
 #include "FujiNetLink.hxx"
+#include "FNGOHostHooks.hxx"
 
 namespace {
 
@@ -274,6 +278,7 @@ fb_status_t FujiNetLink::readFrame(size_t& outLen, uInt32 timeoutMs)
       if(c == 0xC0 && ++ends == 2)
       {
         outLen = n;
+        FNGOHostHooks::fujinetBytes(0, myRxRaw.data(), n);
         return FB_OK;
       }
     }
@@ -315,8 +320,11 @@ fb_status_t FujiNetLink::transact(uInt8 device, uInt8 command,
     return FB_ETOOBIG;
 
   const auto s = static_cast<sock_t>(mySocket);
-  if(::send(s, reinterpret_cast<const char*>(myTxRaw.data()),
-            static_cast<int>(reqLen), SEND_FLAGS) != static_cast<int>(reqLen))
+  const auto sent = ::send(s, reinterpret_cast<const char*>(myTxRaw.data()),
+                           static_cast<int>(reqLen), SEND_FLAGS);
+  if(sent > 0)
+    FNGOHostHooks::fujinetBytes(1, myTxRaw.data(), static_cast<size_t>(sent));
+  if(sent != static_cast<int>(reqLen))
     return FB_ENOLINK;
 
   for(;;)
@@ -347,8 +355,11 @@ void FujiNetLink::sendBare(uInt8 device, uInt8 command,
   const size_t n =
     fujibus_build_request(device, command, nullptr, 0, payload, payloadLen,
                           myTxRaw.data(), myTxRaw.size());
-  if(n)
-    ::send(static_cast<sock_t>(mySocket),
-           reinterpret_cast<const char*>(myTxRaw.data()),
-           static_cast<int>(n), SEND_FLAGS);
+  if(!n)
+    return;
+  const auto sent = ::send(static_cast<sock_t>(mySocket),
+                           reinterpret_cast<const char*>(myTxRaw.data()),
+                           static_cast<int>(n), SEND_FLAGS);
+  if(sent > 0)
+    FNGOHostHooks::fujinetBytes(1, myTxRaw.data(), static_cast<size_t>(sent));
 }

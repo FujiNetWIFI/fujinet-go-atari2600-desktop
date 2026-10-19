@@ -16,6 +16,7 @@
 #include <QPixmap>
 #include <QPointer>
 #include <QScrollBar>
+#include <QSplitter>
 #include <QTabWidget>
 #include <QTextCursor>
 #include <QTextBlock>
@@ -25,6 +26,7 @@
 #include "../FujiNetWindows.h"
 
 #define DISASM_WINDOW 48
+#define TRACE_MAX 512
 
 namespace {
 
@@ -46,6 +48,35 @@ QString stripControl(const char *s)
     for (; *s; ++s)
         if ((unsigned char)*s >= 0x20 || *s == '\n' || *s == '\t') out += QChar(*s);
     return out;
+}
+
+/* Whether a view's reader is at its end (a log then follows new lines). */
+bool atEnd(QPlainTextEdit *v)
+{
+    return v->verticalScrollBar()->value() >= v->verticalScrollBar()->maximum() - 1;
+}
+
+/* Replaces a view's text where the reader left it (a refresh must not throw
+ * a scrolled view back to its top), or, following, at its end. */
+void setText(QPlainTextEdit *v, const QString &text, bool follow = false)
+{
+    if (v->toPlainText() == text) {
+        if (follow) v->verticalScrollBar()->setValue(v->verticalScrollBar()->maximum());
+        return;
+    }
+    const int top = v->verticalScrollBar()->value(), left = v->horizontalScrollBar()->value();
+    v->setPlainText(text);
+    v->verticalScrollBar()->setValue(follow ? v->verticalScrollBar()->maximum() : top);
+    v->horizontalScrollBar()->setValue(left);
+}
+
+QLabel *titleLabel(const QString &text)
+{
+    auto *l = new QLabel(text);
+    QFont f = l->font();
+    f.setBold(true);
+    l->setFont(f);
+    return l;
 }
 
 bool parseNum(const QString &t, long *out)
@@ -85,6 +116,7 @@ DebuggerWindow::DebuggerWindow(a2600session *session, QWidget *parent)
     auto *root = new QVBoxLayout(central);
     root->addWidget(buildToolbar());
     auto *tabs = new QTabWidget;
+    m_tabs = tabs;
     tabs->addTab(buildPrompt(), QStringLiteral("Prompt"));
     tabs->addTab(buildCpu(), QStringLiteral("CPU && RAM"));
     tabs->addTab(buildDisasm(), QStringLiteral("Disassembly"));
@@ -92,8 +124,16 @@ DebuggerWindow::DebuggerWindow(a2600session *session, QWidget *parent)
     tabs->addTab(buildRiot(), QStringLiteral("I/O"));
     tabs->addTab(buildBreaks(), QStringLiteral("Breaks && Traps"));
     tabs->addTab(buildStates(), QStringLiteral("States && Cart"));
-    if (qEnvironmentVariableIsSet("A2600_DEBUGGER_TAB"))
-        tabs->setCurrentIndex(qEnvironmentVariableIntValue("A2600_DEBUGGER_TAB"));
+    m_fujiPage = tabs->addTab(buildFujinet(), QStringLiteral("FujiNet"));
+    connect(tabs, &QTabWidget::currentChanged, this, [this](int index) {
+        if (index == m_fujiPage) refreshFujinet(false);
+    });
+    /* a page number, or "fujinet" */
+    if (qEnvironmentVariableIsSet("A2600_DEBUGGER_TAB")) {
+        const QString tab = qEnvironmentVariable("A2600_DEBUGGER_TAB").trimmed();
+        tabs->setCurrentIndex(tab.compare(QStringLiteral("fujinet"), Qt::CaseInsensitive) == 0
+                                  ? m_fujiPage : tab.toInt());
+    }
     root->addWidget(tabs, 1);
     setCentralWidget(central);
 
@@ -375,6 +415,42 @@ QWidget *DebuggerWindow::buildStates()
     return w;
 }
 
+QWidget *DebuggerWindow::buildFujinet()
+{
+    auto *split = new QSplitter(Qt::Horizontal);
+    auto *left = new QWidget;
+    auto *lv = new QVBoxLayout(left);
+    lv->addWidget(titleLabel(QStringLiteral("FujiBus packets (SLIP-decoded)")));
+    auto *row = new QHBoxLayout;
+    m_fujiNote = new QLabel;
+    m_fujiNote->setStyleSheet(QStringLiteral("color: gray;"));
+    m_fujiNote->setWordWrap(true);
+    auto *clear = new QPushButton(QStringLiteral("Clear"));
+    connect(clear, &QPushButton::clicked, this, [this] {
+        a2600debug_fujinet_trace_clear(m_dbg);
+        refreshFujinet(true);
+    });
+    row->addWidget(m_fujiNote, 1);
+    row->addWidget(clear);
+    lv->addLayout(row);
+    m_fujiText = monoView(false);
+    lv->addWidget(m_fujiText, 1);
+    left->setMinimumWidth(560);
+
+    auto *right = new QWidget;
+    auto *rv = new QVBoxLayout(right);
+    rv->addWidget(titleLabel(QStringLiteral("The FujiNet cartridge")));
+    m_fujiState = monoView(false);
+    rv->addWidget(m_fujiState, 1);
+    right->setMinimumWidth(380);
+    split->addWidget(left);
+    split->addWidget(right);
+    split->setStretchFactor(0, 3);
+    split->setStretchFactor(1, 2);
+    split->setChildrenCollapsible(false);
+    return split;
+}
+
 /* ---- refresh -------------------------------------------------------------- */
 
 void DebuggerWindow::refreshStatus()
@@ -529,9 +605,43 @@ void DebuggerWindow::refreshBps()
     m_bps->setPlainText(s);
 }
 
+void DebuggerWindow::refreshFujinet(bool force)
+{
+    static a2600_fuji_packet p[TRACE_MAX];
+    static char state[2048];
+    const int n = a2600debug_fujinet_trace(m_dbg, p, TRACE_MAX);
+    if (!a2600session_fujinet_running(m_session)) {
+        m_fujiNote->setText(QStringLiteral("FujiNet is off (Preferences ▸ Host ▸ Enable FujiNet)."));
+    } else {
+        const int link = a2600session_cart_link_up(m_session);
+        m_fujiNote->setText(QStringLiteral("FujiNet is on BoIP %1%2").arg(A2600SESSION_BOIP_PORT)
+                                .arg(link > 0 ? QStringLiteral(", connected.")
+                                     : link == 0 ? QStringLiteral(", not connected.")
+                                                 : QStringLiteral("; a local cartridge has no link.")));
+    }
+    state[0] = '\0';
+    a2600debug_fujinet_state(m_dbg, state, sizeof state);
+    setText(m_fujiState, QString::fromUtf8(state));
+
+    if (!force && n == m_fujiCount && (n == 0 || p[n - 1].serial == m_fujiLast)) return;
+    m_fujiCount = n;
+    m_fujiLast = n > 0 ? p[n - 1].serial : 0;
+    QString t;
+    for (int i = 0; i < n; ++i) {
+        if (i) t += QLatin1Char('\n');
+        t += QString::fromUtf8(p[i].text) + QStringLiteral("\n     ");
+        for (int k = 0; k < p[i].nbytes && k < (int)sizeof p[i].data; k++)
+            t += QStringLiteral("%1 ").arg(p[i].data[k], 2, 16, QLatin1Char('0')).toUpper();
+        if (p[i].nbytes > (int)sizeof p[i].data) t += QStringLiteral("…");
+    }
+    if (n == 0) t = QStringLiteral("(no FujiBus packets since the trace was cleared)");
+    setText(m_fujiText, t, force || atEnd(m_fujiText));
+}
+
 void DebuggerWindow::refreshAll()
 {
     refreshStatus(); refreshCpu(); refreshRam(); refreshDisasm(); refreshTia(); refreshRiot(); refreshBps();
+    refreshFujinet(false);
 }
 
 void DebuggerWindow::tick()
@@ -545,6 +655,7 @@ void DebuggerWindow::tick()
     } else if (!stopped && ++m_runningTicks >= 5) {
         m_runningTicks = 0;
         refreshStatus(); refreshCpu(); refreshTia(); refreshRiot();
+        if (m_tabs->currentIndex() == m_fujiPage) refreshFujinet(false);
     }
 }
 

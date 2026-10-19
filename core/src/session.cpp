@@ -37,6 +37,7 @@ extern "C" {
 // debug.cpp
 void a2600debug_note_stop(a2600session* s, const char* msg, int addr);
 void a2600debug_destroy(a2600session* s);
+void a2600debug_trace_install(a2600session* s);
 
 namespace {
 
@@ -316,6 +317,7 @@ extern "C" int a2600session_start(a2600session* s, const a2600session_start_opts
       apply_port_types(*os, s);
   };
   host_of(s)->setCallbacks(cb);
+  a2600debug_trace_install(s);
 
   std::string err;
   if(!host_of(s)->start(cfg, err))

@@ -8,6 +8,14 @@ target_link_libraries(host_test PRIVATE stella_core)
 add_test(NAME host_test COMMAND host_test)
 set_tests_properties(host_test PROPERTIES TIMEOUT 120)
 
+# The debugger's FujiNet trace decoder, pure: synthetic SLIP bytes both
+# ways, split input, folded repeats. No emulator, no network.
+add_executable(fuji_trace_test fuji_trace_test.c "${CMAKE_SOURCE_DIR}/core/src/fuji_trace.cpp")
+target_include_directories(fuji_trace_test PRIVATE
+  "${CMAKE_SOURCE_DIR}/core/include" "${CMAKE_SOURCE_DIR}/core/src")
+target_link_libraries(fuji_trace_test PRIVATE Threads::Threads)
+add_test(NAME fuji_trace COMMAND fuji_trace_test)
+
 # These need the session layer, which needs SDL3. On a build without it
 # (a cross-toolchain, or a lean machine) the core's own tests still run.
 if(TARGET a2600_session)

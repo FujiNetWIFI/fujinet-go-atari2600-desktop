@@ -40,7 +40,9 @@ Stella is compiled from its own sources with this project's flags; it is
   non-blocking connect also selects on the exception set, which is where
   Winsock (unlike POSIX) reports a refused connection. Without it, every
   connect attempt on Windows with no FujiNet listening waited out the 3 s
-  timeout on the emulation thread. Worth sending upstream.
+  timeout on the emulation thread. Worth sending upstream. And three calls
+  that hand every byte sent and every frame received to the host
+  (`FNGOHostHooks::fujinetBytes`) for the debugger's FujiNet trace.
 - `src/common/Variant.hxx` — on Apple platforms only, the float and double
   string parses use `strtof_l`/`strtod_l` in the "C" locale instead of
   `std::from_chars`, which Apple's libc++ marks unavailable before macOS 26

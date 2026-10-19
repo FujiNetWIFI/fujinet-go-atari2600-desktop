@@ -2,7 +2,7 @@
  * Debugger window (Win32) over Stella's own debugger engine, via
  * core/include/a2600debug.h. Mirrors the GTK and Qt debuggers tab for tab
  * -- Prompt, CPU & RAM, Disassembly, TIA, I/O, Breaks & Traps, States &
- * Cart -- built from plain common controls.
+ * Cart, FujiNet -- built from plain common controls.
  *
  * Every a2600debug call blocks briefly on the Stella thread, so the window
  * refreshes on a timer keyed to the engine's generation counter rather
@@ -18,13 +18,16 @@
 #include <commdlg.h>
 #include <windowsx.h>
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 
 #include "a2600debug.h"
 
 #define DISASM_WINDOW 48
+#define TRACE_MAX 512
 
 #define WM_DBG_ACCEPT (WM_APP + 2)   /* wp: control id -- Enter in an edit */
 #define WM_DBG_TAB    (WM_APP + 3)   /* Tab in the prompt: complete */
@@ -33,7 +36,7 @@
 
 enum {
     PAGE_PROMPT = 0, PAGE_CPU, PAGE_DISASM, PAGE_TIA, PAGE_RIOT, PAGE_BREAKS, PAGE_STATES,
-    PAGE_COUNT
+    PAGE_FUJINET, PAGE_COUNT
 };
 
 enum {
@@ -51,6 +54,7 @@ enum {
     IDC_LOAD0, IDC_LOAD_LAST = IDC_LOAD0 + 9,
     IDC_FILE0, IDC_FILE_LAST = IDC_FILE0 + 4,
     IDC_CART_INFO,
+    IDC_FUJI_NOTE, IDC_FUJI_CLEAR, IDC_FUJI_TEXT, IDC_FUJI_STATE,
     IDC_LABEL_FIRST
 };
 
@@ -74,7 +78,12 @@ typedef struct {
 
     HWND states_label, save_btn[10], load_btn[10], files_label, file_btn[5], cart_label, cart_info;
 
+    HWND fuji_title, fuji_note, fuji_clear, fuji_text, state_title, fuji_state;
+    uint64_t fuji_last;
+    int fuji_count;
+
     HFONT mono, ui;
+    int mono_h;
     HACCEL accel;
     HBRUSH accent;
 
@@ -142,6 +151,90 @@ static void append_text_lf(HWND h, const char *text)
 }
 
 static void edit_text(HWND h, char *out, int outsz) { GetWindowTextA(h, out, outsz); }
+
+/* Engine text is UTF-8 (the trace's arrows): a label or view shows it wide. */
+static void set_label(HWND h, const char *utf8)
+{
+    wchar_t cur[512], w[512];
+    if (!MultiByteToWideChar(CP_UTF8, 0, utf8, -1, w, 512)) w[0] = 0;
+    GetWindowTextW(h, cur, 512);
+    if (wcscmp(cur, w) != 0) SetWindowTextW(h, w);
+}
+
+/* EDIT controls want CR LF and draw control characters as boxes: engine
+ * text (UTF-8) as the wide text a view shows. */
+static wchar_t *wide_view_text(const char *text)
+{
+    size_t n = strlen(text), i, o = 0;
+    char *buf = malloc(n * 2 + 1);
+    wchar_t *w = NULL;
+    int wn;
+    if (!buf) return NULL;
+    for (i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)text[i];
+        if (c == '\n') { buf[o++] = '\r'; buf[o++] = '\n'; }
+        else if (c >= 0x20 || c == '\t') buf[o++] = (char)c;
+    }
+    buf[o] = '\0';
+    wn = MultiByteToWideChar(CP_UTF8, 0, buf, -1, NULL, 0);
+    if (wn > 0 && (w = malloc((size_t)wn * sizeof *w)) != NULL)
+        MultiByteToWideChar(CP_UTF8, 0, buf, -1, w, wn);
+    free(buf);
+    return w;
+}
+
+static size_t addf(char *s, size_t len, size_t cap, const char *fmt, ...)
+{
+    va_list ap;
+    int n;
+    if (len >= cap) return len;
+    va_start(ap, fmt);
+    n = vsnprintf(s + len, cap - len, fmt, ap);
+    va_end(ap);
+    if (n < 0) return len;
+    return len + (size_t)n < cap ? len + (size_t)n : cap - 1;
+}
+
+static int edit_rows(debugger *d, HWND h)
+{
+    RECT c;
+    GetClientRect(h, &c);
+    return d->mono_h > 0 && c.bottom > d->mono_h ? c.bottom / d->mono_h : 1;
+}
+
+/* A log (the FujiNet trace) follows its end while its reader is there. */
+static int edit_at_end(debugger *d, HWND h)
+{
+    const int first = (int)SendMessageW(h, EM_GETFIRSTVISIBLELINE, 0, 0);
+    const int count = (int)SendMessageW(h, EM_GETLINECOUNT, 0, 0);
+    return first + edit_rows(d, h) >= count;
+}
+
+static void edit_to_end(HWND h)
+{
+    SendMessageW(h, EM_LINESCROLL, 0, SendMessageW(h, EM_GETLINECOUNT, 0, 0));
+}
+
+static void edit_scroll_to(HWND h, int first)
+{
+    SendMessageW(h, EM_LINESCROLL, 0, first - (int)SendMessageW(h, EM_GETFIRSTVISIBLELINE, 0, 0));
+}
+
+/* Replaces a view's text where the reader left it (a refresh must not throw
+ * a scrolled view back to its top), or, following, at its end. */
+static void set_text_at(HWND h, const char *text, int follow)
+{
+    const int first = (int)SendMessageW(h, EM_GETFIRSTVISIBLELINE, 0, 0);
+    wchar_t *w = wide_view_text(text);
+    if (!w) return;
+    SendMessageW(h, WM_SETREDRAW, FALSE, 0);
+    SetWindowTextW(h, w);
+    if (follow) edit_to_end(h);
+    else edit_scroll_to(h, first);
+    SendMessageW(h, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(h, NULL, TRUE);
+    free(w);
+}
 
 /* $hex, 0xhex, #dec, or bare hex, as Stella's prompt reads numbers. */
 static int parse_num(const char *text, long *out)
@@ -363,6 +456,44 @@ static void refresh_bps(debugger *d)
     set_text_lf(d->bp_list, text);
 }
 
+static void refresh_fujinet(debugger *d, int force)
+{
+    static a2600_fuji_packet p[TRACE_MAX];
+    static char t[TRACE_MAX * 320 + 128];
+    static char state[2048];
+    char note[200];
+    size_t len = 0;
+    int n = a2600debug_fujinet_trace(d->dbg, p, TRACE_MAX), i, follow;
+
+    if (!a2600session_fujinet_running(d->session)) {
+        snprintf(note, sizeof note, "FujiNet is off (Preferences \xe2\x96\xb8 Host \xe2\x96\xb8 Enable FujiNet).");
+    } else {
+        const int link = a2600session_cart_link_up(d->session);
+        snprintf(note, sizeof note, "FujiNet is on BoIP %d%s", A2600SESSION_BOIP_PORT,
+                 link > 0 ? ", connected." : link == 0 ? ", not connected." : "; a local cartridge has no link.");
+    }
+    set_label(d->fuji_note, note);
+    state[0] = '\0';
+    a2600debug_fujinet_state(d->dbg, state, sizeof state);
+    set_text_at(d->fuji_state, state, 0);
+    if (n < 0) n = 0;
+
+    if (!force && n == d->fuji_count && (n == 0 || p[n - 1].serial == d->fuji_last)) return;
+    follow = force || d->fuji_count < 0 || edit_at_end(d, d->fuji_text);
+    d->fuji_count = n;
+    d->fuji_last = n > 0 ? p[n - 1].serial : 0;
+    t[0] = '\0';
+    for (i = 0; i < n; i++) {
+        int k;
+        len = addf(t, len, sizeof t, "%s%s\n     ", i ? "\n" : "", p[i].text);
+        for (k = 0; k < p[i].nbytes && k < (int)sizeof p[i].data; k++)
+            len = addf(t, len, sizeof t, "%02X ", p[i].data[k]);
+        if (p[i].nbytes > (int)sizeof p[i].data) len = addf(t, len, sizeof t, "\xe2\x80\xa6");
+    }
+    if (n == 0) len = addf(t, len, sizeof t, "(no FujiBus packets since the trace was cleared)");
+    set_text_at(d->fuji_text, t, follow);
+}
+
 static void refresh_all(debugger *d)
 {
     refresh_status(d);
@@ -372,6 +503,7 @@ static void refresh_all(debugger *d)
     refresh_tia(d);
     refresh_riot(d);
     refresh_bps(d);
+    refresh_fujinet(d, 0);
 }
 
 /* ---- actions ------------------------------------------------------------------ */
@@ -650,7 +782,7 @@ static void build_controls(debugger *d)
 {
     TCITEMA item;
     static const char *const tabs[PAGE_COUNT] = { "Prompt", "CPU && RAM", "Disassembly", "TIA", "I/O",
-                                                  "Breaks && Traps", "States && Cart" };
+                                                  "Breaks && Traps", "States && Cart", "FujiNet" };
     static const char *const reg_names[6] = { "PC", "SP", "A", "X", "Y", "PS" };
     static const char *const flag_names[7] = { "N", "V", "B", "D", "I", "Z", "C" };
     int i, n;
@@ -750,6 +882,15 @@ static void build_controls(debugger *d)
     for (i = 0; i < 5; i++) d->file_btn[i] = button(d, kFileTitles[i], IDC_FILE0 + i);
     d->cart_label = label(d, "Cartridge");
     d->cart_info = child(d, "STATIC", "", SS_LEFT, IDC_CART_INFO, d->ui);
+
+    /* FujiNet */
+    d->fuji_title = label(d, "FujiBus packets (SLIP-decoded)");
+    d->fuji_note = child(d, "STATIC", "", SS_LEFT | SS_ENDELLIPSIS, IDC_FUJI_NOTE, d->ui);
+    d->fuji_clear = button(d, "Clear", IDC_FUJI_CLEAR);
+    d->fuji_text = mono_view(d, IDC_FUJI_TEXT, 0);
+    SendMessageA(d->fuji_text, EM_SETLIMITTEXT, 0, 0);
+    d->state_title = label(d, "The FujiNet cartridge");
+    d->fuji_state = mono_view(d, IDC_FUJI_STATE, 0);
 }
 
 static void show_page(debugger *d, int page)
@@ -760,6 +901,7 @@ static void show_page(debugger *d, int page)
     HWND tia[] = { d->tia_text, d->tia_reg_label, d->tia_reg, d->tia_val_label, d->tia_val, d->tia_pic, d->tia_partial };
     HWND brk[] = { d->bp_entry, d->bp_clear, d->bp_list };
     HWND st[] = { d->states_label, d->files_label, d->cart_label, d->cart_info };
+    HWND fuji[] = { d->fuji_title, d->fuji_note, d->fuji_clear, d->fuji_text, d->state_title, d->fuji_state };
     size_t i;
     d->page = page;
 #define SHOW(arr, p) for (i = 0; i < sizeof(arr) / sizeof((arr)[0]); i++) ShowWindow((arr)[i], page == (p) ? SW_SHOW : SW_HIDE)
@@ -774,6 +916,7 @@ static void show_page(debugger *d, int page)
     SHOW(st, PAGE_STATES);
     for (i = 0; i < 10; i++) { ShowWindow(d->save_btn[i], page == PAGE_STATES ? SW_SHOW : SW_HIDE); ShowWindow(d->load_btn[i], page == PAGE_STATES ? SW_SHOW : SW_HIDE); }
     for (i = 0; i < 5; i++) ShowWindow(d->file_btn[i], page == PAGE_STATES ? SW_SHOW : SW_HIDE);
+    SHOW(fuji, PAGE_FUJINET);
 #undef SHOW
 }
 
@@ -872,6 +1015,17 @@ static void layout(debugger *d)
         MoveWindow(d->cart_label, px, ry, pw, 18, TRUE); ry += 22;
         MoveWindow(d->cart_info, px, ry, pw, 60, TRUE);
     }
+
+    /* FujiNet: the packets left (a note and Clear over them), the link's state right */
+    {
+        const int rw = pw / 3 > 380 ? 380 : pw / 3, lw = pw - rw - 12;
+        MoveWindow(d->fuji_title, px, py, lw, 18, TRUE);
+        MoveWindow(d->fuji_clear, px + lw - 80, py + 22, 80, 26, TRUE);
+        MoveWindow(d->fuji_note, px, py + 27, lw - 90 > 40 ? lw - 90 : 40, 18, TRUE);
+        MoveWindow(d->fuji_text, px, py + 54, lw, ph - 54, TRUE);
+        MoveWindow(d->state_title, px + lw + 12, py, rw, 18, TRUE);
+        MoveWindow(d->fuji_state, px + lw + 12, py + 22, rw, ph - 22, TRUE);
+    }
 }
 
 /* ---- window proc -------------------------------------------------------------------- */
@@ -899,6 +1053,7 @@ static LRESULT CALLBACK dbg_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 if (d->page == PAGE_CPU) refresh_cpu(d);
                 else if (d->page == PAGE_TIA) refresh_tia(d);
                 else if (d->page == PAGE_RIOT) refresh_riot(d);
+                else if (d->page == PAGE_FUJINET) refresh_fujinet(d, 0);
             }
         }
         return 0;
@@ -912,11 +1067,13 @@ static LRESULT CALLBACK dbg_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (((LPNMHDR)lp)->code == (UINT)TCN_SELCHANGE) {
             show_page(d, (int)SendMessageA(d->tabs, TCM_GETCURSEL, 0, 0));
             layout(d);
+            if (d->page == PAGE_FUJINET) refresh_fujinet(d, 0);
             return 0;
         }
         break;
     case WM_CTLCOLORSTATIC:
-        if ((HWND)lp == d->status || (HWND)lp == d->cycles || (HWND)lp == d->cart_info || (HWND)lp == d->disasm_hint) {
+        if ((HWND)lp == d->status || (HWND)lp == d->cycles || (HWND)lp == d->cart_info || (HWND)lp == d->disasm_hint
+            || (HWND)lp == d->fuji_note) {
             SetTextColor((HDC)wp, GetSysColor(COLOR_GRAYTEXT));
             SetBkColor((HDC)wp, GetSysColor(COLOR_BTNFACE));
             return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
@@ -969,6 +1126,10 @@ static LRESULT CALLBACK dbg_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             refresh_all(d);
             return 0;
         }
+        case IDC_FUJI_CLEAR:
+            a2600debug_fujinet_trace_clear(d->dbg);
+            refresh_fujinet(d, 1);
+            return 0;
         default: break;
         }
         break;
@@ -1030,6 +1191,7 @@ void a2600_debugger_show(HWND parent, a2600session *session)
     d->session = session;
     d->dbg = a2600session_debugger(session);
     d->disasm_bank = -1;
+    d->fuji_count = -1;
     d->tia_px = calloc((size_t)A2600SESSION_FB_WIDTH * A2600SESSION_FB_MAX_HEIGHT, sizeof *d->tia_px);
     g_dbg = d;
 
@@ -1042,6 +1204,16 @@ void a2600_debugger_show(HWND parent, a2600session *session)
                           CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, "Consolas");
     d->accent = CreateSolidBrush(RGB((A2600SESSION_ACCENT_RGB >> 16) & 0xff, (A2600SESSION_ACCENT_RGB >> 8) & 0xff,
                                      A2600SESSION_ACCENT_RGB & 0xff));
+    {
+        /* a view's line height, for whether a log's reader is at its end */
+        HDC dc = GetDC(d->hwnd);
+        HGDIOBJ prev = SelectObject(dc, d->mono);
+        TEXTMETRICA tm;
+        d->mono_h = 15;
+        if (GetTextMetricsA(dc, &tm)) d->mono_h = tm.tmHeight;
+        SelectObject(dc, prev);
+        ReleaseDC(d->hwnd, dc);
+    }
 
     build_controls(d);
 
@@ -1056,7 +1228,8 @@ void a2600_debugger_show(HWND parent, a2600session *session)
     tab = getenv("A2600_DEBUGGER_TAB");
     d->page = PAGE_PROMPT;
     if (tab && *tab) {
-        int t = atoi(tab);
+        /* a page number, or "fujinet" */
+        int t = _stricmp(tab, "fujinet") == 0 ? PAGE_FUJINET : atoi(tab);
         if (t >= 0 && t < PAGE_COUNT) d->page = t;
     }
     SendMessageA(d->tabs, TCM_SETCURSEL, (WPARAM)d->page, 0);

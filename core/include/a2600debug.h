@@ -175,6 +175,25 @@ void a2600debug_state_load(a2600debug *d, int slot);
 int  a2600debug_save(a2600debug *d, const char *kind, const char *path,
                      char *msg, int msgsz);
 
+/* ---- FujiNet: the cartridge's link, as FujiBus packets ------------------------ */
+/* Always on from session start. Consecutive identical exchanges fold into
+ * one entry each way, counted in `repeat` (and shown as "x3" in text). */
+typedef struct {
+    uint64_t serial;        /* bumped again when a repeat folds in */
+    int      to_host;       /* 1: FujiNet -> 2600, 0: 2600 -> FujiNet */
+    int      device, command, length;   /* from the FujiBus header, -1 if short */
+    int      nbytes;
+    uint8_t  data[64];      /* the decoded packet's first bytes */
+    char     text[96];      /* "2600 -> FujiNet 70 F4 READ HOST SLOTS (6 bytes)" */
+    uint32_t repeat;
+} a2600_fuji_packet;
+/* The newest `max` packets, oldest first. Returns the count. */
+int  a2600debug_fujinet_trace(a2600debug *d, a2600_fuji_packet *out, int max);
+void a2600debug_fujinet_trace_clear(a2600debug *d);
+/* The link's state as text lines: FujiNet, the cartridge, its link status,
+ * whether a game was booted, the traffic so far. Returns the length. */
+int  a2600debug_fujinet_state(a2600debug *d, char *dst, int dstsz);
+
 #ifdef __cplusplus
 }
 #endif
