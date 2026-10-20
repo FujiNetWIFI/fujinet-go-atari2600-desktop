@@ -134,7 +134,7 @@ void SoundFNGO::fill(float* out, uInt32 frames)
     myMutex.unlock();
     return;
   }
-  myResampler->fillFragment(out, frames);
+  myResampler->fillFragment(out, samples);   // a float count, not frames
   if(myVolumeFactor != 1.F)
     for(uInt32 i = 0; i < samples; ++i)
       out[i] *= myVolumeFactor;
