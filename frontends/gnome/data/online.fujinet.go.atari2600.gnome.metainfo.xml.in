@@ -51,6 +51,14 @@
     <release version="@PROJECT_VERSION@" date="2026-10-19">
       <description>
         <p>
+          Fixes a buzz over silence, heard at start-up in CONFIG: half
+          of every audio buffer went out unwritten.
+        </p>
+      </description>
+    </release>
+    <release version="0.2.0" date="2026-10-19">
+      <description>
+        <p>
           Debugger: a FujiNet tab shows every FujiBus packet between the 2600
           and FujiNet, both ways, with hex.
         </p>
