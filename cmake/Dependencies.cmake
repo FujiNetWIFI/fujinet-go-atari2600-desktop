@@ -36,7 +36,8 @@
 #          cmake -B build -DSTELLA_SRC=~/Workspace/stella \
 #                         -DFUJINET_SRC=~/Workspace/fn-2600
 #   2. third_party/<name>, initialising the submodule when this tree is a git
-#      checkout.
+#      checkout. An existing clean checkout is moved onto the pin when the pin
+#      changes.
 #   3. No git metadata to work from (release tarballs, some IDE source
 #      copies): a direct clone of the pinned commit.
 
@@ -208,10 +209,13 @@ function(a2600_provide_dependency)
     endif()
   endif()
 
-  # Warn when a git checkout has drifted from the pin recorded here -- the
-  # staged protocol sources are the wire format, and a drifted tree can
-  # silently change what the cart device speaks.
-  if(DEP_COMMIT AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
+  # Move a checkout that has drifted from the pin recorded here onto it. The
+  # clone is made once, so without this a pin bump never reaches an existing
+  # tree: the build stays on the old sources -- for stella, the old embedded
+  # CONFIG -- while CI, cloning fresh, gets the new ones. A checkout with
+  # local changes is left alone, loudly; develop through STELLA_SRC /
+  # FUJINET_SRC instead.
+  if(DEP_COMMIT AND EXISTS "${_path}/.git")
     find_package(Git QUIET)
     if(GIT_FOUND)
       execute_process(
@@ -219,9 +223,37 @@ function(a2600_provide_dependency)
         OUTPUT_VARIABLE _head OUTPUT_STRIP_TRAILING_WHITESPACE
         ERROR_QUIET RESULT_VARIABLE _rc)
       if(_rc EQUAL 0 AND NOT _head STREQUAL DEP_COMMIT)
-        message(STATUS
-          "${DEP_NAME}: checkout is ${_head}, pinned ${DEP_COMMIT} "
-          "(cmake/Dependencies.cmake)")
+        execute_process(
+          COMMAND ${GIT_EXECUTABLE} -C "${_path}" status --porcelain
+                  --untracked-files=no
+          OUTPUT_VARIABLE _dirty OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(_dirty)
+          message(WARNING
+            "${DEP_NAME}: ${DEP_PATH} is at ${_head} with local changes, not "
+            "the pin ${DEP_COMMIT} (cmake/Dependencies.cmake). Building it as "
+            "it is.")
+        else()
+          message(STATUS "${DEP_NAME}: moving ${DEP_PATH} ${_head} -> ${DEP_COMMIT}")
+          execute_process(
+            COMMAND ${GIT_EXECUTABLE} -C "${_path}" cat-file -e "${DEP_COMMIT}^{commit}"
+            RESULT_VARIABLE _have ERROR_QUIET)
+          if(NOT _have EQUAL 0)
+            execute_process(
+              COMMAND ${GIT_EXECUTABLE} -C "${_path}" fetch --quiet
+                      --filter=blob:none "${DEP_URL}" "${DEP_COMMIT}"
+              RESULT_VARIABLE _rc)
+          endif()
+          execute_process(
+            COMMAND ${GIT_EXECUTABLE} -c advice.detachedHead=false -C "${_path}"
+                    checkout --quiet "${DEP_COMMIT}"
+            RESULT_VARIABLE _rc)
+          if(NOT _rc EQUAL 0)
+            message(FATAL_ERROR
+              "${DEP_NAME}: could not move ${DEP_PATH} to the pin ${DEP_COMMIT}. "
+              "Delete ${DEP_PATH} to re-clone it, or point ${DEP_OVERRIDE} at a "
+              "checkout.")
+          endif()
+        endif()
       endif()
     endif()
   endif()
