@@ -42,13 +42,14 @@
 
 find_package(Git QUIET)
 
-# stella, branch add-fujinet-support (8bb59d1fa): "Add FujiNet support",
-# "embed default config, add ability to specify config rom" and "FujiNet:
-# blits 15-19 from fn-2600" -- the FujiNet cartridge, the SLIP/TCP link, the
-# vendored mailbox protocol (with the path-poke / tile-grid blits and
-# FN_BLIT_MULEMAP, which draws the 2600 M.U.L.E. map) and the embedded CONFIG
-# client (src/emucore/fujinet/FujiConfigROM.hxx).
-set(STELLA_COMMIT "8bb59d1fa7b3492abeb3e01e55168fa570bc30c6")
+# stella, branch add-fujinet-support (ea01ef454): "Add FujiNet support",
+# "embed default config, add ability to specify config rom", "FujiNet: blits
+# 15-19 from fn-2600" and "FujiNet: CONFIG with colour, a frame, a selection
+# bar and sound" -- the FujiNet cartridge, the SLIP/TCP link, the vendored
+# mailbox protocol (with the path-poke / tile-grid blits and FN_BLIT_MULEMAP,
+# which draws the 2600 M.U.L.E. map) and the embedded CONFIG client
+# (src/emucore/fujinet/FujiConfigROM.hxx, fujinet-config f38ed1d).
+set(STELLA_COMMIT "ea01ef4546af7ae660dcf7977658282728fd29a9")
 set(STELLA_URL "https://github.com/tschak909/stella")
 
 # fujinet-firmware, branch tcp-protocol-disable-nagle (c68e86303): master plus
