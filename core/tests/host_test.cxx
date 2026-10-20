@@ -130,14 +130,15 @@ int main()
 
   // The resampler counts floats, not frames: a short count left half of every
   // device buffer as stale stack, which played as a buzz over CONFIG's silence.
+  // Not a silence check: with no FujiNet listening, CONFIG beeps its error.
   {
     constexpr uInt32 frames = 1024;
     std::vector<float> buf(2 * frames, 1234.F);
     host.fillAudio(buf.data(), frames);
-    bool silent = true;
+    bool written = true;
     for(const float v : buf)
-      silent = silent && v > -1e-4F && v < 1e-4F;
-    check(silent, "fillAudio writes the whole buffer, and CONFIG is silent");
+      written = written && v >= -1.F && v <= 1.F;
+    check(written, "fillAudio writes every sample of the buffer");
   }
 
   // Pacing: 60 frames should take about a second at 60 Hz. The lower bound
