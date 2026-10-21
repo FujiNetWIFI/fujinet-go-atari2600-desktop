@@ -130,8 +130,8 @@ int a2600session_media_is_cartridge(const char *path)
 }
 
 /* Into the SD root, so CONFIG shows it at the top of the SD host with no
- * navigation. Any cartridge image goes, whatever its extension: FujiNet
- * serves it as bytes and the cartridge boots whatever Stella can map. */
+ * navigation. FujiNet pushes .a26/.bin/.rom as a cartridge image and the
+ * cartridge boots whatever Stella can map; it mounts a .fuji as a disk. */
 int a2600session_import_cart_to_sd(a2600session *s, const char *src_path,
                                    char *dest_out, int dest_sz)
 {
