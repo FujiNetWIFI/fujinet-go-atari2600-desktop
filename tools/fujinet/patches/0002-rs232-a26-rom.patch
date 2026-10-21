@@ -1,0 +1,19 @@
+Treat .a26 as a cartridge ROM, so CONFIG pushes it to the 2600 cart instead
+of mounting it as a disk image. Nearly every 2600 dump on a public TNFS host is
+.a26. Drop this once the pin includes the same change upstream.
+
+diff --git a/lib/media/rs232/diskType.cpp b/lib/media/rs232/diskType.cpp
+--- a/lib/media/rs232/diskType.cpp
++++ b/lib/media/rs232/diskType.cpp
+@@ -77,8 +77,10 @@
+         // replaces the previous disksize==8192||16384||32768 heuristic
+         // (rs232Disk::mount()), which misfired on any file of those exact
+         // sizes regardless of extension and missed every other ROM size.
++        // A26 is the Atari 2600's.
+         if (strcasecmp(ext, "ROM") == 0 || strcasecmp(ext, "BIN") == 0 ||
+-            strcasecmp(ext, "INT") == 0 || strcasecmp(ext, "ITV") == 0)
++            strcasecmp(ext, "INT") == 0 || strcasecmp(ext, "ITV") == 0 ||
++            strcasecmp(ext, "A26") == 0)
+         {
+             return MEDIATYPE_ROM;
+         }

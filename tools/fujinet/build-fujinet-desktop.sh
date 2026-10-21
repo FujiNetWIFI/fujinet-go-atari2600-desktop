@@ -188,7 +188,9 @@ stage_identity() {
         commit="${commit}-dirty-$(date +%s)"
     fi
     printf '%s %s %s\n' "${FUJINET_SRC}" "${commit}" \
-        "$(cat "${BASH_SOURCE[0]}" "${SUPPORT_DIR}/fujinet_desktop_entry.cpp" \
+        "$( { cat "${BASH_SOURCE[0]}" "${SUPPORT_DIR}/fujinet_desktop_entry.cpp"
+              find "${SCRIPT_DIR}/patches" -maxdepth 1 -type f -name '*.patch' \
+                   2>/dev/null | sort | xargs -r cat; } \
            | cksum | cut -d' ' -f1)"
 }
 

@@ -39,6 +39,8 @@ if(WITH_FUJINET)
     RESULT FUJINET_DIR)
 
   set(FUJINET_SCRIPT "${CMAKE_SOURCE_DIR}/tools/fujinet/build-fujinet-desktop.sh")
+  file(GLOB FUJINET_PATCHES CONFIGURE_DEPENDS
+       "${CMAKE_SOURCE_DIR}/tools/fujinet/patches/*.patch")
 
   # Always invoke the recipe through bash by name (a native Windows cmake
   # hands a bare .sh to cmd.exe otherwise).
@@ -63,6 +65,7 @@ if(WITH_FUJINET)
             "${BASH_EXECUTABLE}" "${FUJINET_SCRIPT}"
     DEPENDS "${FUJINET_SCRIPT}"
             "${CMAKE_SOURCE_DIR}/tools/fujinet/support/fujinet_desktop_entry.cpp"
+            ${FUJINET_PATCHES}
             "${FUJINET_STAMP}"
     COMMENT "Building the FujiNet runtime (first build takes a few minutes)"
     USES_TERMINAL
