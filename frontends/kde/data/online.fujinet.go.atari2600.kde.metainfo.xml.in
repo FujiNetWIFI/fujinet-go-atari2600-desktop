@@ -48,7 +48,17 @@
     <!-- The CURRENT release templates its version from @PROJECT_VERSION@, so
          it cannot disagree with the tree; past releases are literal. The
          release job checks that this first entry is still a template. -->
-    <release version="@PROJECT_VERSION@" date="2026-10-20">
+    <release version="@PROJECT_VERSION@" date="2026-10-26">
+      <description>
+        <p>
+          Windows draws with Direct3D 11, presented on vblank, instead of
+          GDI, and its FujiNet console log is no longer empty. .a26 images
+          boot from CONFIG, and CONFIG no longer stalls with ERR FF
+          between it and the cartridge.
+        </p>
+      </description>
+    </release>
+    <release version="0.2.2" date="2026-10-20">
       <description>
         <p>
           The built-in CONFIG gets colour, a frame, a selection bar and
