@@ -1,4 +1,4 @@
-# The Windows frontend: Win32 + GDI, no toolkit.
+# The Windows frontend: Win32 + Direct3D 11, no toolkit.
 #
 # WIN32_EXECUTABLE gives WinMain and no console window. The manifest is
 # generated from PROJECT_VERSION rather than repeating it, so the version
@@ -19,6 +19,7 @@ enable_language(RC)
 
 add_executable(fujinet-go-atari2600-windows WIN32
   main.c
+  display.c
   keypad/keypad_window.c
   debugger/dbg_window.c
   resource.rc
@@ -27,11 +28,12 @@ target_include_directories(fujinet-go-atari2600-windows PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(fujinet-go-atari2600-windows PRIVATE
   a2600_session
-  # dwmapi: DwmFlush, this platform's frame clock. comdlg32: the file
+  # d3d11/dxgi: the display (d3dcompiler is loaded at run time). dwmapi:
+  # DwmFlush paces the GDI fallback. comdlg32: the file
   # dialogs. shell32: DragQueryFile and ShellExecute for the web UI.
   # comctl32: the debugger's tab control and the settings trackbar (and the
   # v6 manifest above is what makes them look like this decade).
-  dwmapi comdlg32 shell32 comctl32)
+  d3d11 dxgi dwmapi comdlg32 shell32 comctl32)
 target_compile_options(fujinet-go-atari2600-windows PRIVATE -Wall -Wextra)
 
 # Bundle the MinGW runtime statically so the .exe has no loose DLL deps.

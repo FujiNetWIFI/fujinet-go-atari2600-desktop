@@ -11,7 +11,7 @@ family (`fujinet-go-adam-desktop`, `-apple2-`, `-coco-`, `-msx-`, `-intv-`,
 |---|---|
 | **Emulator** | [Stella](https://github.com/tschak909/stella) (branch `add-fujinet-support`), GPL-2.0-or-later, compiled as a library with its SDL frontend left out and its debugger engine kept. The FujiNet cartridge (`CartFUJI`) speaks the same mailbox protocol as the RP2040 cartridge, from the firmware's own vendored sources. |
 | **FujiNet** | The firmware's `RS232` PC target, built in-process as `libfujinet` and dialled by the cartridge over loopback (BoIP on 11504, web admin on 11505). |
-| **Frontends** | GNOME (GTK4/libadwaita), KDE (Qt6 Widgets), macOS (AppKit), Windows (Win32/GDI) — each with the display, a floating keypad window for both keyboard controllers, Preferences, a live FujiNet console log, and a debugger exposing every one of Stella's debugger commands. |
+| **Frontends** | GNOME (GTK4/libadwaita), KDE (Qt6 Widgets), macOS (AppKit), Windows (Win32/Direct3D 11) — each with the display, a floating keypad window for both keyboard controllers, Preferences, a live FujiNet console log, and a debugger exposing every one of Stella's debugger commands. |
 | **Packaging** | Per-frontend DEB/RPM/TGZ, two Flatpaks, a Windows zip and NSIS installer, and macOS bundles for **arm64 and x86_64**, all through GitHub Actions. |
 
 ## What it is

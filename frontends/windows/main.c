@@ -1,14 +1,15 @@
 /*
- * FujiNet Go Atari 2600 -- the Windows (Win32 + GDI) frontend.
+ * FujiNet Go Atari 2600 -- the Windows (Win32 + Direct3D 11) frontend.
  *
- * No toolkit: a plain window, a menu bar, and StretchDIBits. That is enough
- * for a 160-pixel-wide framebuffer, and it keeps the artifact a folder you
- * copy rather than a runtime hunt.
+ * No toolkit: a plain window, a menu bar, and a child window that display.c
+ * draws with Direct3D 11 (GDI as the fallback). It keeps the artifact a
+ * folder you copy rather than a runtime hunt.
  *
  * Two Windows-specific things are load bearing:
  *
- *   DwmFlush() on a present thread is this platform's frame clock. There is
- *   no GdkFrameClock here, and a plain timer would beat against the panel.
+ *   The display's render thread, presenting on vblank, is this platform's
+ *   frame clock (see display.c). There is no GdkFrameClock here, and a plain
+ *   timer would beat against the panel.
  *
  *   WM_ACTIVATE releases every held key. Alt-tabbing away mid-jump and coming
  *   back to a character walking into a wall is the classic symptom of not
@@ -21,7 +22,6 @@
 
 #include <windows.h>
 #include <commctrl.h>
-#include <dwmapi.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,6 +29,7 @@
 
 #include "a2600session.h"
 #include "debugger/dbg_window.h"
+#include "display.h"
 #include "keypad/keypad_window.h"
 #include "key_forward.h"
 #include "resource.h"
@@ -38,76 +39,10 @@
 
 static a2600session *g_session;
 static HWND g_hwnd;
-static uint32_t *g_fb;
-static int g_fb_height;
-static uint64_t g_serial;
-static BITMAPINFO g_bmi;
-static CRITICAL_SECTION g_fb_lock;
-static volatile LONG g_running = 1;
-static HANDLE g_present_thread;
+static HWND g_display;
 static int g_tv_aspect = 1, g_smooth = 0, g_fullscreen = 0;
 static WINDOWPLACEMENT g_placement;
 static int g_sysact_down[A2600_SYSACT_COUNT];
-
-/* ---- the present thread: this platform's frame clock ---------------------- */
-
-static DWORD WINAPI present_thread(LPVOID arg)
-{
-    (void)arg;
-    while (InterlockedCompareExchange(&g_running, 1, 1)) {
-        LARGE_INTEGER t, f;
-        int h = 0;
-        /* Blocks until the compositor's next vblank; falls through at once
-         * if the DWM is off, and the session's wall-clock pacing takes over
-         * -- which is the whole reason notify_vsync is advisory. */
-        DwmFlush();
-        QueryPerformanceCounter(&t);
-        QueryPerformanceFrequency(&f);
-        a2600session_notify_vsync(g_session,
-                                  (int64_t)(t.QuadPart * 1000000000LL / f.QuadPart));
-        EnterCriticalSection(&g_fb_lock);
-        if (a2600session_copy_frame(g_session, g_fb, &h, &g_serial)) {
-            g_fb_height = h;
-            LeaveCriticalSection(&g_fb_lock);
-            InvalidateRect(g_hwnd, NULL, FALSE);
-        } else {
-            LeaveCriticalSection(&g_fb_lock);
-        }
-    }
-    return 0;
-}
-
-/* ---- painting ------------------------------------------------------------- */
-
-static void paint(HDC dc)
-{
-    RECT rc;
-    double want, w, h, sw, sh;
-    int fbh;
-
-    GetClientRect(g_hwnd, &rc);
-    w = rc.right - rc.left;
-    h = rc.bottom - rc.top;
-    FillRect(dc, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
-    if (w <= 0 || h <= 0) return;
-
-    EnterCriticalSection(&g_fb_lock);
-    fbh = g_fb_height;
-    if (fbh <= 0) { LeaveCriticalSection(&g_fb_lock); return; }
-
-    /* A television showed whatever lines the game drew inside its 4:3
-     * screen, with each TIA pixel about twice as wide as it is tall. */
-    want = g_tv_aspect ? (4.0 / 3.0) : (double)A2600SESSION_FB_WIDTH / (double)fbh;
-    if (w / h > want) { sh = h; sw = sh * want; }
-    else              { sw = w; sh = sw / want; }
-
-    /* Stella's pixels are 0x00RRGGBB: exactly a 32-bit BI_RGB DIB. */
-    g_bmi.bmiHeader.biHeight = -fbh;   /* top-down */
-    SetStretchBltMode(dc, g_smooth ? HALFTONE : COLORONCOLOR);
-    StretchDIBits(dc, (int)((w - sw) / 2), (int)((h - sh) / 2), (int)sw, (int)sh,
-                  0, 0, A2600SESSION_FB_WIDTH, fbh, g_fb, &g_bmi, DIB_RGB_COLORS, SRCCOPY);
-    LeaveCriticalSection(&g_fb_lock);
-}
 
 /* ---- helpers -------------------------------------------------------------- */
 
@@ -634,13 +569,10 @@ static void toggle_switch_item(HWND hwnd, int id, int sw)
 static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
-    case WM_PAINT: {
-        PAINTSTRUCT ps;
-        HDC dc = BeginPaint(hwnd, &ps);
-        paint(dc);
-        EndPaint(hwnd, &ps);
+    case WM_SIZE:
+        if (g_display && wp != SIZE_MINIMIZED)
+            MoveWindow(g_display, 0, 0, LOWORD(lp), HIWORD(lp), TRUE);
         return 0;
-    }
     case WM_ERASEBKGND:
         return 1;
 
@@ -728,7 +660,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             g_tv_aspect = !g_tv_aspect;
             if (m) CheckMenuItem(m, IDM_TV_ASPECT, MF_BYCOMMAND | (g_tv_aspect ? MF_CHECKED : MF_UNCHECKED));
             a2600session_set_int(g_session, "tv_aspect", g_tv_aspect);
-            InvalidateRect(hwnd, NULL, TRUE);
+            a2600_display_set_options(g_tv_aspect, g_smooth);
             return 0;
         }
         case IDM_SMOOTH: {
@@ -736,7 +668,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             g_smooth = !g_smooth;
             if (m) CheckMenuItem(m, IDM_SMOOTH, MF_BYCOMMAND | (g_smooth ? MF_CHECKED : MF_UNCHECKED));
             a2600session_set_int(g_session, "smooth", g_smooth);
-            InvalidateRect(hwnd, NULL, TRUE);
+            a2600_display_set_options(g_tv_aspect, g_smooth);
             return 0;
         }
         case IDM_SETTINGS: show_settings((HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE)); return 0;
@@ -774,6 +706,8 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_DESTROY:
         KillTimer(hwnd, IDT_STATUS);
         KillTimer(hwnd, IDT_SYSACT);
+        a2600_display_destroy();
+        g_display = NULL;
         PostQuitMessage(0);
         return 0;
     default: break;
@@ -790,7 +724,6 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     (void)prev;
 
     InitCommonControlsEx(&icc);
-    InitializeCriticalSection(&g_fb_lock);
 
     g_session = a2600session_new(NULL);
     if (!g_session) {
@@ -798,17 +731,6 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
                     APP_TITLE, MB_ICONERROR | MB_OK);
         return 1;
     }
-    g_fb = calloc((size_t)A2600SESSION_FB_WIDTH * A2600SESSION_FB_MAX_HEIGHT, sizeof *g_fb);
-    if (!g_fb) return 1;
-
-    memset(&g_bmi, 0, sizeof g_bmi);
-    g_bmi.bmiHeader.biSize = sizeof g_bmi.bmiHeader;
-    g_bmi.bmiHeader.biWidth = A2600SESSION_FB_WIDTH;
-    g_bmi.bmiHeader.biHeight = -A2600SESSION_FB_MAX_HEIGHT;
-    g_bmi.bmiHeader.biPlanes = 1;
-    g_bmi.bmiHeader.biBitCount = 32;
-    g_bmi.bmiHeader.biCompression = BI_RGB;
-
     g_tv_aspect = a2600session_get_int(g_session, "tv_aspect", 1);
     g_smooth = a2600session_get_int(g_session, "smooth", 0);
 
@@ -829,6 +751,8 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     build_menu(g_hwnd);
     CheckMenuItem(GetMenu(g_hwnd), IDM_TV_ASPECT, MF_BYCOMMAND | (g_tv_aspect ? MF_CHECKED : MF_UNCHECKED));
     CheckMenuItem(GetMenu(g_hwnd), IDM_SMOOTH, MF_BYCOMMAND | (g_smooth ? MF_CHECKED : MF_UNCHECKED));
+    a2600_display_set_options(g_tv_aspect, g_smooth);
+    g_display = a2600_display_create(g_hwnd, g_session);
     ShowWindow(g_hwnd, show);
 
     a2600session_default_opts(g_session, &opts);
@@ -849,8 +773,6 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
         if (env && *env && *env != '0') show_settings(inst);
     }
 
-    g_present_thread = CreateThread(NULL, 0, present_thread, NULL, 0, NULL);
-
     while (GetMessage(&msg, NULL, 0, 0) > 0) {
         /* Before TranslateMessage, so the sub-windows' keys reach them
          * regardless of which child control has the focus. */
@@ -860,14 +782,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
         DispatchMessage(&msg);
     }
 
-    InterlockedExchange(&g_running, 0);
-    if (g_present_thread) {
-        WaitForSingleObject(g_present_thread, 2000);
-        CloseHandle(g_present_thread);
-    }
     a2600session_stop(g_session);
     a2600session_free(g_session);
-    free(g_fb);
-    DeleteCriticalSection(&g_fb_lock);
     return (int)msg.wParam;
 }
