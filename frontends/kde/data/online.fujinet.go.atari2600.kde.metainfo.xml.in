@@ -56,6 +56,13 @@
          it cannot disagree with the tree; past releases are literal. The
          release job checks that this first entry is still a template. -->
         <release version="@PROJECT_VERSION@" date="2026-10-27">
+          <description>
+            <p>
+              The Flatpak bundles now name Flathub as their runtime repository, so a downloaded bundle can fetch the GNOME or KDE runtime on a machine that has not set up Flathub.
+            </p>
+          </description>
+        </release>
+        <release version="0.3.1" date="2026-10-27">
       <description>
         <p>
           The Flatpak builds on the GNOME 51 runtime. The software-centre
