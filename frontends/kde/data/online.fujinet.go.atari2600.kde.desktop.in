@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=FujiNet Go Atari 2600
+Name=FujiNet Go Atari 2600 (KDE)
 GenericName=Atari 2600 Emulator
 Comment=An Atari 2600 with a built-in FujiNet
 Exec=fujinet-go-atari2600-kde %f
