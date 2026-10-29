@@ -32,6 +32,18 @@ add_executable(bindings_test bindings_test.c)
 target_link_libraries(bindings_test PRIVATE a2600_session)
 add_test(NAME bindings COMMAND bindings_test)
 
+# The external-FujiNet address field, pure.
+add_executable(hostport_test hostport_test.c)
+target_link_libraries(hostport_test PRIVATE a2600_session)
+add_test(NAME hostport COMMAND hostport_test)
+
+# "Use external FujiNet" end to end: a bad address refuses, a good one is
+# dialled by the cartridge (a stand-in listener sees it), no runtime starts.
+add_executable(external_test external_test.c)
+target_link_libraries(external_test PRIVATE a2600_session)
+add_test(NAME external COMMAND external_test)
+set_tests_properties(external PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
 # Where a dropped file goes.
 add_executable(media_test media_test.c)
 target_link_libraries(media_test PRIVATE a2600_session)

@@ -189,6 +189,10 @@ static int pick_cart(const char *title, char *path, DWORD pathsz)
  */
 
 static HWND g_settings_window;
+#ifndef EM_SETCUEBANNER
+#define EM_SETCUEBANNER 0x1501
+#endif
+
 static int g_settings_dirty;
 static HWND g_pad_list, g_pad_port, g_port_note[2];
 static unsigned g_pad_generation;
@@ -286,6 +290,11 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
             return 0;
         case IDC_SET_FUJINET: settings_apply_checkbox(hwnd, IDC_SET_FUJINET, "enable_fujinet", 1, 0); return 0;
+        case IDC_SET_EXTERNAL:
+            settings_apply_checkbox(hwnd, IDC_SET_EXTERNAL, "fujinet_external", 0, 0);
+            EnableWindow(GetDlgItem(hwnd, IDC_SET_EXT_ADDR),
+                         SendMessageA(GetDlgItem(hwnd, IDC_SET_EXTERNAL), BM_GETCHECK, 0, 0) == BST_CHECKED);
+            return 0;
         case IDC_SET_AUDIO: settings_apply_checkbox(hwnd, IDC_SET_AUDIO, "enable_audio", 1, 0); return 0;
         case IDC_SET_GAMEPAD: settings_apply_checkbox(hwnd, IDC_SET_GAMEPAD, "enable_gamepad", 1, 0); return 0;
         default: break;
@@ -302,9 +311,31 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             update_port_notes();
         }
         return 0;
-    case WM_CLOSE:
+    case WM_CLOSE: {
+        /* The address is checked on the way out; a bad one keeps the window
+         * open. What is saved is the trimmed text the parser read. */
+        char addr[96], host[64];
+        int port;
+        char *text = addr;
+        size_t len;
+        GetDlgItemTextA(hwnd, IDC_SET_EXT_ADDR, addr, sizeof addr);
+        while (*text == ' ' || *text == '\t') text++;
+        len = strlen(text);
+        while (len && (text[len - 1] == ' ' || text[len - 1] == '\t')) text[--len] = '\0';
+        if (SendMessageA(GetDlgItem(hwnd, IDC_SET_EXTERNAL), BM_GETCHECK, 0, 0) == BST_CHECKED &&
+            a2600session_parse_hostport(text, host, sizeof host, &port) != 0) {
+            MessageBoxA(hwnd, "That is not an address:port.\n\nExample: 127.0.0.1:11504",
+                        "External FujiNet", MB_ICONWARNING | MB_OK);
+            SetFocus(GetDlgItem(hwnd, IDC_SET_EXT_ADDR));
+            return 0;
+        }
+        if (strcmp(text, a2600session_get_str(g_session, "fujinet_external_addr", "")) != 0) {
+            a2600session_set_str(g_session, "fujinet_external_addr", text);
+            g_settings_dirty = 1;
+        }
         DestroyWindow(hwnd);
         return 0;
+    }
     case WM_DESTROY:
         KillTimer(hwnd, IDT_SETTINGS_PADS);
         g_settings_window = NULL;
@@ -371,7 +402,7 @@ static void show_settings(HINSTANCE inst)
     }
     g_settings_window = CreateWindowA("A2600SettingsWindow", "Settings",
         WS_OVERLAPPEDWINDOW & ~(WS_MAXIMIZEBOX | WS_THICKFRAME),
-        CW_USEDEFAULT, CW_USEDEFAULT, 460, 640, NULL, NULL, inst, NULL);
+        CW_USEDEFAULT, CW_USEDEFAULT, 460, 700, NULL, NULL, inst, NULL);
 
     settings_label(g_settings_window, inst, "Machine (applied by restarting the session)", 16, y, 420, 18, 0); y += 22;
     settings_label(g_settings_window, inst, "TV format:", 16, y + 3, 90, 18, 0);
@@ -428,6 +459,20 @@ static void show_settings(HINSTANCE inst)
     settings_label(g_settings_window, inst, "Host (applied by restarting the session)", 16, y, 420, 18, 0); y += 22;
     settings_checkbox(g_settings_window, inst, "Enable FujiNet", IDC_SET_FUJINET, 16, y, 200,
                       a2600session_get_int(g_session, "enable_fujinet", 1)); y += 26;
+    settings_checkbox(g_settings_window, inst, "Use external FujiNet (connect to another instance)",
+                      IDC_SET_EXTERNAL, 16, y, 420,
+                      a2600session_get_int(g_session, "fujinet_external", 0)); y += 26;
+    settings_label(g_settings_window, inst, "Address:port:", 34, y + 3, 80, 18, 0);
+    {
+        HWND edit = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT",
+                                    a2600session_get_str(g_session, "fujinet_external_addr", ""),
+                                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 120, y, 200, 22,
+                                    g_settings_window, (HMENU)(INT_PTR)IDC_SET_EXT_ADDR, inst, NULL);
+        SendMessageA(edit, WM_SETFONT, (WPARAM)font, TRUE);
+        SendMessageA(edit, EM_SETCUEBANNER, FALSE, (LPARAM)L"127.0.0.1:11504");
+        EnableWindow(edit, a2600session_get_int(g_session, "fujinet_external", 0) != 0);
+    }
+    y += 30;
     settings_checkbox(g_settings_window, inst, "Audio", IDC_SET_AUDIO, 16, y, 200,
                       a2600session_get_int(g_session, "enable_audio", 1)); y += 26;
     settings_checkbox(g_settings_window, inst, "Gamepads", IDC_SET_GAMEPAD, 16, y, 200,
@@ -672,8 +717,19 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             return 0;
         }
         case IDM_SETTINGS: show_settings((HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE)); return 0;
-        case IDM_FUJINET_LOG: show_fujinet_log((HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE)); return 0;
+        case IDM_FUJINET_LOG:
+            if (a2600session_fujinet_external(g_session)) {
+                MessageBoxA(hwnd, "FujiNet is external: its console output is in the process that "
+                            "is running it.", "FujiNet", MB_ICONINFORMATION | MB_OK);
+                return 0;
+            }
+            show_fujinet_log((HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE)); return 0;
         case IDM_FUJINET_CONFIG:
+            if (a2600session_fujinet_external(g_session)) {
+                MessageBoxA(hwnd, "FujiNet is external: use the web UI of that instance.",
+                            "FujiNet", MB_ICONINFORMATION | MB_OK);
+                return 0;
+            }
             if (!a2600session_fujinet_running(g_session)) {
                 MessageBoxA(hwnd, "FujiNet is not running.", "FujiNet", MB_ICONINFORMATION | MB_OK);
                 return 0;

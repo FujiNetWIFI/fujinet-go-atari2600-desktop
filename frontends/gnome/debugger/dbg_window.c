@@ -458,7 +458,12 @@ static void refresh_fujinet(DbgWin *w, gboolean force)
     char note[200];
     int n = a2600debug_fujinet_trace(w->dbg, p, TRACE_MAX), i;
 
-    if (!a2600session_fujinet_running(w->session)) {
+    if (a2600session_fujinet_external(w->session)) {
+        const int link = a2600session_cart_link_up(w->session);
+        g_snprintf(note, sizeof note, "External FujiNet at %s%s", a2600session_boip_endpoint(w->session),
+                   link > 0 ? ", connected." : link == 0 ? ", not connected."
+                                             : "; a local cartridge has no link.");
+    } else if (!a2600session_fujinet_running(w->session)) {
         g_strlcpy(note, "FujiNet is off (Preferences \xe2\x96\xb8 Host \xe2\x96\xb8 Enable FujiNet).", sizeof note);
     } else {
         const int link = a2600session_cart_link_up(w->session);

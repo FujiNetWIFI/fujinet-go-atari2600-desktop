@@ -412,6 +412,10 @@ static void action_fujinet_config(GSimpleAction *a, GVariant *p, gpointer user_d
 {
     A2600Window *self = user_data;
     (void)a; (void)p;
+    if (a2600session_fujinet_external(self->session)) {
+        a2600_window_toast(self, "FujiNet is external: use its own web UI");
+        return;
+    }
     if (!a2600session_fujinet_running(self->session)) {
         a2600_window_toast(self, "FujiNet is not running");
         return;
@@ -423,6 +427,10 @@ static void action_fujinet_log(GSimpleAction *a, GVariant *p, gpointer user_data
 {
     A2600Window *self = user_data;
     (void)a; (void)p;
+    if (a2600session_fujinet_external(self->session)) {
+        a2600_window_toast(self, "FujiNet is external: see its own console");
+        return;
+    }
     a2600_fujilog_show(GTK_WINDOW(self), self->session);
 }
 

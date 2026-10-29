@@ -259,11 +259,76 @@ extern "C" void a2600session_default_opts(a2600session* s, a2600session_start_op
   opts->analog_paddle = a2600session_get_int(s, "analog_paddle", 1);
   opts->analog_driving = a2600session_get_int(s, "analog_driving", 1);
   opts->enable_fujinet = a2600session_get_int(s, "enable_fujinet", 1);
+  opts->external_fujinet = a2600session_get_int(s, "fujinet_external", 0);
+  opts->boip_connect = a2600session_get_str(s, "fujinet_external_addr", nullptr);
   opts->enable_audio = a2600session_get_int(s, "enable_audio", 1);
   opts->enable_gamepad = a2600session_get_int(s, "enable_gamepad", 1);
   opts->cart_path = a2600session_get_str(s, "cart", nullptr);
   if(opts->cart_path && !opts->cart_path[0])
     opts->cart_path = nullptr;
+}
+
+extern "C" int a2600session_parse_hostport(const char* text, char* host, int hostsz, int* port)
+{
+  char buf[80];
+  const char* name = "127.0.0.1";
+  const char* digits;
+  long num = A2600SESSION_BOIP_PORT;
+
+  if(!text) text = "";
+  while(*text == ' ' || *text == '\t') text++;
+  size_t len = strlen(text);
+  while(len && (text[len - 1] == ' ' || text[len - 1] == '\t' ||
+                text[len - 1] == '\n' || text[len - 1] == '\r'))
+    len--;
+  if(len >= sizeof buf) return -1;
+  memcpy(buf, text, len);
+  buf[len] = '\0';
+
+  if(len)
+  {
+    char* colon = strrchr(buf, ':');
+    char* end;
+    if(colon)
+    {
+      *colon = '\0';
+      name = buf;
+      if(!*name) return -1;
+      digits = colon + 1;
+    }
+    else
+      digits = buf;
+    if(!*digits) return -1;
+    num = strtol(digits, &end, 10);
+    if(*end || num < 1 || num > 65535) return -1;
+    if(colon)
+    {
+      // A host name or an IPv4 literal: letters, digits, '.', '-', '_'.
+      // Digits and dots alone must be a full dotted quad.
+      bool numeric = true;
+      if(name[0] == '-' || name[0] == '.') return -1;
+      for(const char* ch = name; *ch; ch++)
+      {
+        if((*ch >= '0' && *ch <= '9') || *ch == '.') continue;
+        numeric = false;
+        if(!((*ch >= 'a' && *ch <= 'z') || (*ch >= 'A' && *ch <= 'Z') || *ch == '-' || *ch == '_'))
+          return -1;
+      }
+      if(numeric)
+      {
+        int octet[4], used = 0;
+        if(sscanf(name, "%d.%d.%d.%d%n", &octet[0], &octet[1], &octet[2], &octet[3], &used) != 4 ||
+           name[used])
+          return -1;
+        for(int idx = 0; idx < 4; idx++)
+          if(octet[idx] < 0 || octet[idx] > 255) return -1;
+      }
+    }
+  }
+  if(static_cast<int>(strlen(name)) >= hostsz) return -1;
+  memcpy(host, name, strlen(name) + 1);
+  *port = static_cast<int>(num);
+  return 0;
 }
 
 extern "C" int a2600session_start(a2600session* s, const a2600session_start_opts* opts)
@@ -285,10 +350,29 @@ extern "C" int a2600session_start(a2600session* s, const a2600session_start_opts
     s->cart_path[0] = '\0';
   s->opts.cart_path = s->cart_path[0] ? s->cart_path : nullptr;
 
+  // An external FujiNet is somebody else's: no runtime of ours, the
+  // cartridge just dials its address (and keeps redialling until it is up).
+  s->fujinet_external = 0;
+  snprintf(s->boip_host, sizeof s->boip_host, "127.0.0.1");
+  s->boip_port = A2600SESSION_BOIP_PORT;
+  if(opts->external_fujinet)
+  {
+    if(a2600session_parse_hostport(opts->boip_connect, s->boip_host, sizeof s->boip_host,
+                                   &s->boip_port) != 0)
+    {
+      session_set_error(s, "\"%s\" is not an address:port for the external FujiNet "
+                           "(example: 127.0.0.1:%d)",
+                        opts->boip_connect ? opts->boip_connect : "", A2600SESSION_BOIP_PORT);
+      return -1;
+    }
+    s->fujinet_external = 1;
+  }
+  snprintf(s->boip_endpoint, sizeof s->boip_endpoint, "%s:%d", s->boip_host, s->boip_port);
+
   // FujiNet FIRST: it listens and the cartridge dials in, so the listener
   // has to exist before the machine's first transaction or the CONFIG
   // client boots reporting no link. Failing to start is NOT fatal.
-  if(opts->enable_fujinet)
+  if(opts->enable_fujinet && !s->fujinet_external)
   {
     if(fujinet_start(s) == 0)
       fujinet_wait_for_boip(s, 3000);
@@ -300,8 +384,8 @@ extern "C" int a2600session_start(a2600session* s, const a2600session_start_opts
   cfg.audioRate = A2600SESSION_AUDIO_RATE;
   cfg.audioStereo = true;
   cfg.options["fujinet"] = true;
-  cfg.options["fujinet.host"] = "127.0.0.1";
-  cfg.options["fujinet.port"] = static_cast<Int32>(A2600SESSION_BOIP_PORT);
+  cfg.options["fujinet.host"] = std::string(s->boip_host);
+  cfg.options["fujinet.port"] = static_cast<Int32>(s->boip_port);
   cfg.options["audio.volume"] = static_cast<Int32>(a2600session_get_int(s, "volume", 100));
   cfg.options["audio.preset"] = static_cast<Int32>(0);      // custom
   cfg.options["audio.resampling_quality"] = static_cast<Int32>(2);   // lanczos_2
@@ -324,6 +408,7 @@ extern "C" int a2600session_start(a2600session* s, const a2600session_start_opts
   {
     session_set_error(s, "%s", err.c_str());
     fujinet_stop(s);
+    s->fujinet_external = 0;
     return -1;
   }
 
@@ -355,6 +440,7 @@ extern "C" void a2600session_stop(a2600session* s)
   gamepad_stop(s);
   host_of(s)->stop();
   fujinet_stop(s);
+  s->fujinet_external = 0;
   s->running = 0;
 }
 
@@ -639,9 +725,19 @@ extern "C" int a2600session_fujinet_running(const a2600session* s)
   return s->fujinet_running;
 }
 
+extern "C" int a2600session_fujinet_external(const a2600session* s)
+{
+  return s->fujinet_external;
+}
+
+extern "C" const char* a2600session_boip_endpoint(const a2600session* s)
+{
+  return s->boip_endpoint[0] ? s->boip_endpoint : "127.0.0.1:11504";
+}
+
 extern "C" const char* a2600session_fujinet_webui_url(const a2600session* s)
 {
-  return s->webui_url;
+  return s->fujinet_external ? "" : s->webui_url;
 }
 
 extern "C" int a2600session_cart_link_up(a2600session* s)

@@ -39,6 +39,8 @@
 #define IDC_SET_GAMEPAD    2012
 #define IDC_SET_PORT0_NOTE 2013
 #define IDC_SET_PORT1_NOTE 2014
+#define IDC_SET_EXTERNAL   2015
+#define IDC_SET_EXT_ADDR   2016
 
 #define IDC_LOG_EDIT       2100
 #define IDT_LOG_REFRESH    1

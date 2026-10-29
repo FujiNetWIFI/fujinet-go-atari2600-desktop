@@ -50,6 +50,10 @@ struct a2600session {
     char fujinet_runtime_src[A2600_PATH_MAX]; /* caller-given pristine tree, or "" */
     char webui_url[64];                   /* http://127.0.0.1:11505/ */
     int  fujinet_running;
+    int  fujinet_external;      /* dialling a FujiNet that isn't ours */
+    char boip_host[64];         /* where the cartridge dials */
+    int  boip_port;
+    char boip_endpoint[80];     /* "host:port" for display */
 
     /* cross-thread system-action latch (see a2600session_sysaction_post) */
     pthread_mutex_t sysact_mtx;

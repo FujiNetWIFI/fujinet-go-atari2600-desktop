@@ -610,7 +610,14 @@ void DebuggerWindow::refreshFujinet(bool force)
     static a2600_fuji_packet p[TRACE_MAX];
     static char state[2048];
     const int n = a2600debug_fujinet_trace(m_dbg, p, TRACE_MAX);
-    if (!a2600session_fujinet_running(m_session)) {
+    if (a2600session_fujinet_external(m_session)) {
+        const int link = a2600session_cart_link_up(m_session);
+        m_fujiNote->setText(QStringLiteral("External FujiNet at %1%2")
+                                .arg(QString::fromUtf8(a2600session_boip_endpoint(m_session)))
+                                .arg(link > 0 ? QStringLiteral(", connected.")
+                                     : link == 0 ? QStringLiteral(", not connected.")
+                                                 : QStringLiteral("; a local cartridge has no link.")));
+    } else if (!a2600session_fujinet_running(m_session)) {
         m_fujiNote->setText(QStringLiteral("FujiNet is off (Preferences ▸ Host ▸ Enable FujiNet)."));
     } else {
         const int link = a2600session_cart_link_up(m_session);

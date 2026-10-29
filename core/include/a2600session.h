@@ -108,13 +108,17 @@ typedef struct {
     int analog_paddle;        /* ... a paddle */
     int analog_driving;       /* ... a driving controller */
     int enable_fujinet;       /* start the in-process FujiNet runtime */
+    int external_fujinet;     /* 1: don't start it; dial the FujiNet listening
+                               * at boip_connect instead */
+    const char *boip_connect; /* "host:port" of that FujiNet (external only);
+                               * NULL/"" = 127.0.0.1:11504 */
     int enable_audio;         /* open the SDL audio device */
     int enable_gamepad;       /* start the SDL gamepad thread */
 } a2600session_start_opts;
 
 /* Fills opts from the settings store (keys: cart tv_format port0_type
  * port1_type analog_joystick analog_paddle analog_driving enable_fujinet
- * enable_audio enable_gamepad). */
+ * fujinet_external fujinet_external_addr enable_audio enable_gamepad). */
 void a2600session_default_opts(a2600session *s, a2600session_start_opts *opts);
 
 /* Starts FujiNet (if enabled) and then the emulator.
@@ -343,7 +347,20 @@ void a2600session_sysaction_post(a2600session *s, int sysact);
 int  a2600session_sysaction_take(a2600session *s, int *out);
 
 /* ---- FujiNet -------------------------------------------------------------*/
+/* Parses the "Use external FujiNet" address field: "host:port" (host a name
+ * or an IPv4 literal) or a bare "port". Empty text means the default,
+ * 127.0.0.1:11504. Returns 0 and fills host/port, or -1 when the text is not
+ * an address:port (nothing is written then). */
+int         a2600session_parse_hostport(const char *text, char *host, int hostsz,
+                                        int *port);
 int         a2600session_fujinet_running(const a2600session *s);
+/* 1 when the session was started to dial an external FujiNet. */
+int         a2600session_fujinet_external(const a2600session *s);
+/* "host:port" the cartridge dials (the running session's, or the default
+ * 127.0.0.1:11504 before the first start). */
+const char *a2600session_boip_endpoint(const a2600session *s);
+/* The built-in FujiNet's web UI; empty while the FujiNet is external (it has
+ * its own). */
 const char *a2600session_fujinet_webui_url(const a2600session *s);
 int         a2600session_fujinet_copy_log(a2600session *s, char *dst, int max);
 /* The cartridge's link to FujiNet: 1 up, 0 down, -1 not a FujiNet cart. */

@@ -942,7 +942,13 @@ static void fill(NSStackView *stack, NSView *view)
     static char state[2048];
     int n = a2600debug_fujinet_trace(_dbg, p, TRACE_MAX);
     if (n < 0) n = 0;
-    if (!a2600session_fujinet_running(_session)) {
+    if (a2600session_fujinet_external(_session)) {
+        const int link = a2600session_cart_link_up(_session);
+        _fujiNote.stringValue = [NSString stringWithFormat:@"External FujiNet at %s%@",
+                                 a2600session_boip_endpoint(_session),
+                                 link > 0 ? @", connected." : link == 0 ? @", not connected."
+                                                                        : @"; a local cartridge has no link."];
+    } else if (!a2600session_fujinet_running(_session)) {
         _fujiNote.stringValue = @"FujiNet is off (Preferences ▸ Host ▸ Enable FujiNet).";
     } else {
         const int link = a2600session_cart_link_up(_session);

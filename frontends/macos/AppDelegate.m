@@ -92,6 +92,7 @@
 
     NSWindow *_settingsWindow;
     BOOL _sessionDirty;
+    NSTextField *_externalField;
     NSPopUpButton *_padList, *_padPort;
     NSTextField *_portNote[2];
     NSTimer *_settingsTimer;
@@ -515,6 +516,8 @@
         return;
     }
     a2600session_set_int(_session, key, value);
+    if (!strcmp(key, "fujinet_external"))
+        _externalField.enabled = value != 0;
     if (!strncmp(key, "analog_", 7)) {
         a2600session_set_analog(_session,
                                 a2600session_get_int(_session, "analog_joystick", 1),
@@ -523,6 +526,42 @@
         return;
     }
     _sessionDirty = YES;
+}
+
+/* The external-FujiNet address: valid text (or none, meaning
+ * 127.0.0.1:11504) is saved; anything else is shown in red and not saved. */
+- (BOOL)externalAddrValid
+{
+    NSString *text = [_externalField.stringValue
+        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    char host[64];
+    int port;
+    if (a2600session_parse_hostport(text.UTF8String, host, sizeof host, &port) != 0) {
+        _externalField.textColor = NSColor.systemRedColor;
+        return NO;
+    }
+    _externalField.textColor = NSColor.controlTextColor;
+    if (strcmp(a2600session_get_str(_session, "fujinet_external_addr", ""), text.UTF8String) != 0) {
+        a2600session_set_str(_session, "fujinet_external_addr", text.UTF8String);
+        _sessionDirty = YES;
+    }
+    return YES;
+}
+
+- (void)externalAddrChanged:(id)sender
+{
+    (void)sender;
+    [self externalAddrValid];
+}
+
+/* A bad address keeps the Settings window open. */
+- (BOOL)windowShouldClose:(NSWindow *)sender
+{
+    if (sender != _settingsWindow) return YES;
+    [_settingsWindow makeFirstResponder:nil]; /* commit a field edit */
+    if (_externalField.enabled == NO || [self externalAddrValid]) return YES;
+    [self alert:@"That is not an address:port" text:@"Example: 127.0.0.1:11504"];
+    return NO;
 }
 
 - (void)showSettings:(id)sender
@@ -556,6 +595,15 @@
     NSStackView *padRow = [NSStackView stackViewWithViews:@[_padList, _padPort]];
     padRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
 
+    _externalField = [NSTextField textFieldWithString:@(
+        a2600session_get_str(_session, "fujinet_external_addr", ""))];
+    _externalField.placeholderString = @"127.0.0.1:11504";
+    _externalField.preferredMaxLayoutWidth = 240;
+    _externalField.enabled = a2600session_get_int(_session, "fujinet_external", 0) != 0;
+    _externalField.target = self;
+    _externalField.action = @selector(externalAddrChanged:);
+    [_externalField.cell setSendsActionOnEndEditing:YES];
+
     NSArray<NSArray<NSView *> *> *rows = @[
         @[ [self sectionLabel:@"Machine"], [self note:@"applied by restarting the session"] ],
         @[ [NSTextField labelWithString:@"TV format"],
@@ -572,6 +620,9 @@
         @[ [NSTextField labelWithString:@"Volume"], volume ],
         @[ [self sectionLabel:@"Host"], [self note:@"applied by restarting the session"] ],
         @[ [NSTextField labelWithString:@""], [self checkBoxForKey:"enable_fujinet" title:@"Enable FujiNet" fallback:1] ],
+        @[ [NSTextField labelWithString:@""],
+           [self checkBoxForKey:"fujinet_external" title:@"Use external FujiNet" fallback:0] ],
+        @[ [NSTextField labelWithString:@"Address:port"], _externalField ],
         @[ [NSTextField labelWithString:@""], [self checkBoxForKey:"enable_audio" title:@"Audio" fallback:1] ],
         @[ [NSTextField labelWithString:@""], [self checkBoxForKey:"enable_gamepad" title:@"Gamepads" fallback:1] ],
     ];
@@ -617,6 +668,7 @@
         return;
     }
     if (note.object != _settingsWindow) return;
+    [_settingsWindow makeFirstResponder:nil]; /* commit a field edit */
     [_settingsTimer invalidate];
     _settingsTimer = nil;
     if (!_sessionDirty) return;
@@ -647,6 +699,10 @@
 - (void)showFujiNetLog:(id)sender
 {
     (void)sender;
+    if (a2600session_fujinet_external(_session)) {
+        [self alert:@"FujiNet is external" text:@"Its console output is in the process that is running it."];
+        return;
+    }
     if (_logWindow) {
         [_logWindow makeKeyAndOrderFront:nil];
         if (!_logTimer)
@@ -687,6 +743,10 @@
 - (void)openWebUI:(id)sender
 {
     (void)sender;
+    if (a2600session_fujinet_external(_session)) {
+        [self alert:@"FujiNet is external" text:@"Use the web UI of that FujiNet instance."];
+        return;
+    }
     if (!a2600session_fujinet_running(_session)) {
         [self alert:@"FujiNet is not running" text:nil];
         return;
