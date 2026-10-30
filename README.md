@@ -61,6 +61,10 @@ The icon is the family mark inverted (black discs and lines, white centre)
 on `#ffa645`, and the same orange marks held keys, the Map target, the
 current line in the disassembly and the Run button while stopped.
 
+## External FujiNet
+
+A switch in Preferences makes the app connect to another FujiNet instance at a host:port you enter, e.g. `127.0.0.1:11504`, instead of starting the built-in one.
+
 ## Building
 
 ```sh
