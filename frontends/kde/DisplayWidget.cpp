@@ -1,77 +1,233 @@
 /*
  * DisplayWidget -- see DisplayWidget.h.
  *
- * A QTimer rather than a frame-clock callback: Qt Widgets has no equivalent
- * of GdkFrameClock. The timer runs a little faster than the machine so no
- * frame waits a whole period, and the session's own wall-clock pacing does
- * the real work -- notify_vsync is still fed, so the phase lock engages
- * whenever the ticks happen to be steady.
- *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 #include "DisplayWidget.h"
 
-#include <QPainter>
-#include <chrono>
-#include <cstring>
+#include "DisplayGeometry.h"
 
-DisplayWidget::DisplayWidget(a2600session *session, QWidget *parent)
-    : QWidget(parent), m_session(session)
+#include <QEvent>
+#include <QFile>
+#include <QMatrix4x4>
+#include <QVector4D>
+#include <QWindow>
+
+static QShader loadShader(const char *path)
 {
-    m_fb.resize(A2600SESSION_FB_WIDTH * A2600SESSION_FB_MAX_HEIGHT);
-    setMinimumSize(320, 240);
-    setFocusPolicy(Qt::StrongFocus);
-    setAutoFillBackground(false);
-
-    connect(&m_timer, &QTimer::timeout, this, &DisplayWidget::tick);
-    /* ~120 Hz: comfortably above the machine's 60 so a finished frame is
-     * never held back by the poll interval. */
-    m_timer.start(8);
+    QFile f(QString::fromLatin1(path));
+    return f.open(QIODevice::ReadOnly) ? QShader::fromSerialized(f.readAll()) : QShader();
 }
 
-void DisplayWidget::tick()
+DisplayWidget::DisplayWidget(a2600session *session, QWidget *parent)
+    : QRhiWidget(parent), m_session(session), m_feed(new FrameFeed(session, this)),
+      m_scratch(A2600SESSION_FB_WIDTH, A2600SESSION_FB_MAX_HEIGHT, QImage::Format_RGB32)
 {
-    auto now = std::chrono::steady_clock::now().time_since_epoch();
-    a2600session_notify_vsync(
-        m_session,
-        (int64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+    m_scratch.fill(0);
+    setMinimumSize(320, 240);
+    setFocusPolicy(Qt::StrongFocus);
+    connect(m_feed, &FrameFeed::frameReady, this, &DisplayWidget::onFrame);
+}
 
+DisplayWidget::~DisplayWidget()
+{
+    m_feed->setActive(false);
+}
+
+void DisplayWidget::setTvAspect(bool tv) { m_tvAspect = tv; update(); }
+void DisplayWidget::setSmooth(bool smooth) { m_smooth = smooth; update(); }
+
+/* ---- idle ------------------------------------------------------------------
+ * A hidden or minimised window has nobody to draw for: the feed unregisters
+ * from the session, so the GUI thread gets no wakeups at all until it is
+ * shown again. The machine itself keeps running (netplay must not stall). */
+
+void DisplayWidget::updateActive()
+{
+    QWidget *w = window();
+    m_feed->setActive(isVisible() && w && !w->isMinimized());
+}
+
+void DisplayWidget::showEvent(QShowEvent *e)
+{
+    QRhiWidget::showEvent(e);
+    if (window())
+        window()->installEventFilter(this);
+    updateActive();
+}
+
+void DisplayWidget::hideEvent(QHideEvent *e)
+{
+    QRhiWidget::hideEvent(e);
+    if (window())
+        window()->removeEventFilter(this);
+    updateActive();
+}
+
+bool DisplayWidget::eventFilter(QObject *watched, QEvent *e)
+{
+    if (e->type() == QEvent::WindowStateChange || e->type() == QEvent::Show ||
+        e->type() == QEvent::Hide)
+        updateActive();
+    return QRhiWidget::eventFilter(watched, e);
+}
+
+bool DisplayWidget::event(QEvent *e)
+{
+    /* The compositor can mark a window occluded without minimising it */
+    if (e->type() == QEvent::ScreenChangeInternal || e->type() == QEvent::WindowActivate)
+        updateActive();
+    return QRhiWidget::event(e);
+}
+
+/* ---- frames ---------------------------------------------------------------- */
+
+void DisplayWidget::onFrame()
+{
     int h = 0;
-    if (!a2600session_copy_frame(m_session, m_fb.data(), &h, &m_serial))
+    /* straight into the scratch image: one copy, and no alpha pass -- the
+     * shader ignores the X byte */
+    if (!a2600session_copy_frame(m_session, reinterpret_cast<uint32_t *>(m_scratch.bits()),
+                               &h, &m_serial))
         return;
-    if (h <= 0 || h > A2600SESSION_FB_MAX_HEIGHT) return;
-
-    /* Stella's pixels are 0x00RRGGBB, which is exactly QImage::Format_RGB32
-     * (the alpha byte is ignored); a straight copy at the frame's height. */
-    if (m_height != h) {
-        m_height = h;
-        m_image = QImage(A2600SESSION_FB_WIDTH, h, QImage::Format_RGB32);
-    }
-    std::memcpy(m_image.bits(), m_fb.data(), (size_t)A2600SESSION_FB_WIDTH * h * 4);
+    if (h <= 0 || h > A2600SESSION_FB_MAX_HEIGHT)
+        return;
+    m_lines = h;
+    m_dirty = true;
     update();
 }
 
-void DisplayWidget::setTvAspect(bool tv) { m_tv = tv; update(); }
-void DisplayWidget::setSmooth(bool smooth) { m_smooth = smooth; update(); }
+/* ---- GPU ------------------------------------------------------------------- */
 
-void DisplayWidget::paintEvent(QPaintEvent *)
+void DisplayWidget::releaseResources()
 {
-    QPainter p(this);
-    p.fillRect(rect(), Qt::black);
-    if (m_height <= 0) return;
+    m_pipeline.reset();
+    m_srb.reset();
+    m_linear.reset();
+    m_nearest.reset();
+    m_tex.reset();
+    m_ubuf.reset();
+    m_texLines = 0;
+}
 
-    /* A television showed whatever lines the game drew inside its 4:3
-     * screen, with each TIA pixel about twice as wide as it is tall: TV
-     * mode letterboxes the frame into 4:3, square pixels show the raw
-     * 160 x height buffer. */
-    const double want = m_tv ? (4.0 / 3.0)
-                             : (double)A2600SESSION_FB_WIDTH / (double)m_height;
-    double w = width(), h = height(), sw, sh;
-    if (w / h > want) { sh = h; sw = sh * want; }
-    else              { sw = w; sh = sw / want; }
+void DisplayWidget::rebuildTexture(int lines)
+{
+    m_tex.reset(m_rhi->newTexture(QRhiTexture::BGRA8, QSize(A2600SESSION_FB_WIDTH, lines)));
+    m_tex->create();
+    m_texLines = lines;
+    m_srb.reset();   /* it names the old texture */
+    /* A new texture is empty. A still picture publishes nothing more, so
+     * re-upload what the scratch image already holds (after a lost device or
+     * an RHI change the old texture's content is gone). */
+    if (m_lines > 0)
+        m_dirty = true;
+}
 
-    p.setRenderHint(QPainter::SmoothPixmapTransform, m_smooth);
-    p.drawImage(QRectF((w - sw) / 2.0, (h - sh) / 2.0, sw, sh), m_image);
+void DisplayWidget::initialize(QRhiCommandBuffer *)
+{
+    if (m_rhi != rhi()) {
+        releaseResources();
+        m_rhi = rhi();
+    }
+    if (m_pipeline)
+        return;
+
+    m_ubuf.reset(m_rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 16));
+    m_ubuf->create();
+    m_nearest.reset(m_rhi->newSampler(QRhiSampler::Nearest, QRhiSampler::Nearest,
+                                      QRhiSampler::None, QRhiSampler::ClampToEdge,
+                                      QRhiSampler::ClampToEdge));
+    m_nearest->create();
+    m_linear.reset(m_rhi->newSampler(QRhiSampler::Linear, QRhiSampler::Linear,
+                                     QRhiSampler::None, QRhiSampler::ClampToEdge,
+                                     QRhiSampler::ClampToEdge));
+    m_linear->create();
+    if (!m_tex)
+        rebuildTexture(m_lines > 0 ? m_lines : 240);
+
+    m_smoothApplied = m_smooth;
+    m_srb.reset(m_rhi->newShaderResourceBindings());
+    m_srb->setBindings({
+        QRhiShaderResourceBinding::uniformBuffer(0, QRhiShaderResourceBinding::VertexStage, m_ubuf.get()),
+        QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage,
+                                                  m_tex.get(), m_smooth ? m_linear.get() : m_nearest.get()),
+    });
+    m_srb->create();
+
+    m_pipeline.reset(m_rhi->newGraphicsPipeline());
+    m_pipeline->setTopology(QRhiGraphicsPipeline::TriangleStrip);
+    m_pipeline->setShaderStages({
+        { QRhiShaderStage::Vertex, loadShader(":/shaders/display.vert.qsb") },
+        { QRhiShaderStage::Fragment, loadShader(":/shaders/display.frag.qsb") },
+    });
+    m_pipeline->setVertexInputLayout({});
+    m_pipeline->setShaderResourceBindings(m_srb.get());
+    m_pipeline->setRenderPassDescriptor(renderTarget()->renderPassDescriptor());
+    if (!m_pipeline->create()) {
+        m_pipeline.reset();
+        emit renderFailed();
+    }
+}
+
+void DisplayWidget::render(QRhiCommandBuffer *cb)
+{
+    if (!m_pipeline)
+        return;
+    QRhiResourceUpdateBatch *u = m_rhi->nextResourceUpdateBatch();
+
+    /* A game changing mode changes the frame's height: the
+     * texture is exactly the frame's size so the sampler never blends in
+     * a stale line, and the bindings are rebuilt around it. */
+    bool rebind = false;
+    if (m_lines > 0 && m_lines != m_texLines) {
+        rebuildTexture(m_lines);
+        rebind = true;
+    }
+    if (m_smooth != m_smoothApplied) {
+        m_smoothApplied = m_smooth;
+        rebind = true;
+    }
+    if (rebind || !m_srb) {
+        m_srb.reset(m_rhi->newShaderResourceBindings());
+        m_srb->setBindings({
+            QRhiShaderResourceBinding::uniformBuffer(0, QRhiShaderResourceBinding::VertexStage, m_ubuf.get()),
+            QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage,
+                                                      m_tex.get(), m_smooth ? m_linear.get() : m_nearest.get()),
+        });
+        m_srb->create();
+    }
+
+    if (m_dirty && m_lines > 0) {
+        QRhiTextureSubresourceUploadDescription sub;
+        const qsizetype bytes = (qsizetype)A2600SESSION_FB_WIDTH * m_lines * 4;
+        sub.setData(QByteArray::fromRawData(reinterpret_cast<const char *>(m_scratch.constBits()), bytes));
+        sub.setDataStride(A2600SESSION_FB_WIDTH * 4);
+        sub.setSourceSize(QSize(A2600SESSION_FB_WIDTH, m_lines));
+        u->uploadTexture(m_tex.get(), QRhiTextureUploadDescription({ QRhiTextureUploadEntry(0, 0, sub) }));
+        m_dirty = false;
+    }
+
+    const QSize px = renderTarget()->pixelSize();
+    const int lines = m_lines > 0 ? m_lines : 240;
+    const QRectF r = displayRect(QSizeF(px), lines, m_tvAspect);
+
+    /* pixel rect -> clip space (y up), then through the backend's correction
+     * so Vulkan's flipped y comes out the right way up */
+    auto clip = [&](double x, double y) {
+        return m_rhi->clipSpaceCorrMatrix() *
+               QVector4D(float(x / px.width() * 2.0 - 1.0), float(1.0 - y / px.height() * 2.0), 0.f, 1.f);
+    };
+    const QVector4D tl = clip(r.left(), r.top());
+    const QVector4D br = clip(r.right(), r.bottom());
+    const float rect[4] = { tl.x(), tl.y(), br.x(), br.y() };
+    u->updateDynamicBuffer(m_ubuf.get(), 0, sizeof rect, rect);
+
+    cb->beginPass(renderTarget(), Qt::black, { 1.0f, 0 }, u);
+    cb->setGraphicsPipeline(m_pipeline.get());
+    cb->setViewport(QRhiViewport(0, 0, px.width(), px.height()));
+    cb->setShaderResources(m_srb.get());
+    cb->draw(4);
+    cb->endPass();
 }

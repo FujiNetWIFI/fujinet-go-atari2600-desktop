@@ -33,11 +33,12 @@ static void sleep_ms(int ms)
 static int wait_frames(a2600session *s, uint64_t *serial, int count, int timeout_ms)
 {
     static uint32_t px[A2600SESSION_FB_WIDTH * A2600SESSION_FB_MAX_HEIGHT];
-    int got = 0, waited = 0, h;
+    uint64_t start = a2600session_frame_count(s);
+    int waited = 0, h;
+    /* identical frames are not republished: count the machine's frames */
     while (waited < timeout_ms) {
-        if (a2600session_copy_frame(s, px, &h, serial)) {
-            if (++got >= count) return 1;
-        }
+        a2600session_copy_frame(s, px, &h, serial);
+        if (a2600session_frame_count(s) >= start + (uint64_t)count) return 1;
         sleep_ms(2); waited += 2;
     }
     return 0;

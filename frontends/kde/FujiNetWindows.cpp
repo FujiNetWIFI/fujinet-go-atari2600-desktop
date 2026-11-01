@@ -56,8 +56,11 @@ void fujinet_log_show(QWidget *parent, a2600session *session)
         const int n = a2600session_fujinet_copy_log(session, buf, sizeof(buf));
         const bool atEnd = view->verticalScrollBar()->value() ==
                            view->verticalScrollBar()->maximum();
-        view->setPlainText(n > 0 ? QString::fromUtf8(buf)
-                                 : QStringLiteral("(no FujiNet output yet)"));
+        const QString text = n > 0 ? QString::fromUtf8(buf)
+                                   : QStringLiteral("(no FujiNet output yet)");
+        if (text == view->toPlainText())
+            return;   /* unchanged: no relayout, no scroll jump */
+        view->setPlainText(text);
         if (atEnd)
             view->verticalScrollBar()->setValue(view->verticalScrollBar()->maximum());
     };

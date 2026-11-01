@@ -473,6 +473,11 @@ static void *thread_main(void *arg)
 
     while (!g->stop_requested) {
         SDL_Event ev;
+        int npads_now;
+
+        pthread_mutex_lock(&g->lock);
+        npads_now = g->npads;
+        pthread_mutex_unlock(&g->lock);
         while (SDL_PollEvent(&ev)) {
             switch (ev.type) {
             case SDL_EVENT_JOYSTICK_ADDED: open_pad(g, ev.jdevice.which); break;
@@ -508,7 +513,10 @@ static void *thread_main(void *arg)
             }
         }
         poll_sticks(g);
-        SDL_Delay(16);   /* ~60 Hz, the machine's own sampling rate */
+        /* ~60 Hz while a pad is attached; with none there is only hotplug to
+         * notice, which can wait 100 ms. (SDL_WaitEventTimeout polls at
+         * ~1 kHz inside, so it is no help.) */
+        SDL_Delay(npads_now > 0 ? 16 : 100);
     }
 
     pthread_mutex_lock(&g->lock);

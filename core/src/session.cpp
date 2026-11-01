@@ -505,6 +505,16 @@ extern "C" int a2600session_copy_frame(a2600session* s, uint32_t* dst, int* heig
   return 1;
 }
 
+extern "C" void a2600session_set_frame_callback(a2600session* s, a2600session_frame_cb cb, void* ctx)
+{
+  if(s->host) host_of(s)->setFrameCallback(cb, ctx);
+}
+
+extern "C" uint64_t a2600session_frame_count(a2600session* s)
+{
+  return s->host && s->running ? host_of(s)->frameCount() : 0;
+}
+
 extern "C" int a2600session_refresh_rate(a2600session* s)
 {
   StellaHost::FrameInfo info;
@@ -595,11 +605,7 @@ extern "C" void a2600session_switch_pulse(a2600session* s, int sw)
   const Event::Type t = (sw == A2600_SW_SELECT) ? Event::ConsoleSelect : Event::ConsoleReset;
   // Held for a few frames: the machine samples the switches once a frame,
   // and real software debounces them over several.
-  host_of(s)->enqueueEvent(t, 1);
-  host_of(s)->withStella([t](OSystem&) { return 0; });
-  struct timespec ts = { 0, 120 * 1000000L };
-  nanosleep(&ts, nullptr);
-  host_of(s)->enqueueEvent(t, 0);
+  host_of(s)->pulseEvent(t, 7);   // ~120 ms; released by the machine thread
 }
 
 extern "C" int a2600session_switch_get(a2600session* s, int sw)

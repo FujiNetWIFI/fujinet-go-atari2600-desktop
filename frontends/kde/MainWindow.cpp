@@ -22,6 +22,7 @@
 #include <QUrl>
 
 #include "DisplayWidget.h"
+#include "SoftDisplayWidget.h"
 #include "FujiNetWindows.h"
 #include "KeyForward.h"
 #include "SettingsDialog.h"
@@ -39,10 +40,14 @@ MainWindow::MainWindow(a2600session *session, QWidget *parent)
     resize(960, 720 + 60);
     setAcceptDrops(true);
 
-    m_display = new DisplayWidget(session, this);
+    auto *gpu = new DisplayWidget(session, this);
+    m_display = gpu;
     m_display->setTvAspect(a2600session_get_int(session, "tv_aspect", 1) != 0);
     m_display->setSmooth(a2600session_get_int(session, "smooth", 0) != 0);
-    setCentralWidget(m_display);
+    setCentralWidget(gpu);
+    /* No usable GPU device: fall back to painting in software */
+    connect(gpu, &QRhiWidget::renderFailed, this, &MainWindow::useSoftwareDisplay,
+            Qt::QueuedConnection);
 
     m_dot = new QLabel(QStringLiteral("●"));
     m_status = new QLabel(QStringLiteral("Starting..."));
@@ -172,6 +177,17 @@ void MainWindow::showAbout()
                        "Copyright © 2026 Thomas Cherryhomes — GPL-3.0-or-later<br>"
                        "<a href=\"https://fujinet.online/\">fujinet.online</a>")
             .arg(QStringLiteral(A2600_VERSION_STRING)));
+}
+
+void MainWindow::useSoftwareDisplay()
+{
+    if (dynamic_cast<SoftDisplayWidget *>(m_display))
+        return;
+    auto *soft = new SoftDisplayWidget(m_session, this);
+    m_display = soft;
+    m_display->setTvAspect(a2600session_get_int(m_session, "tv_aspect", 1) != 0);
+    m_display->setSmooth(a2600session_get_int(m_session, "smooth", 0) != 0);
+    setCentralWidget(soft);   /* deletes the GPU display, which stops its feed */
 }
 
 void MainWindow::showSettings()

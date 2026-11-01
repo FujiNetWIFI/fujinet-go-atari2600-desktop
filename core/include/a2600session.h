@@ -157,6 +157,18 @@ int  a2600session_reboot_to_config(a2600session *s);
  * copy (e.g. the first paint after a window map). */
 int  a2600session_copy_frame(a2600session *s, uint32_t *dst, int *height,
                              uint64_t *serial_inout);
+/* Ask to be told when a new frame is ready, for a frontend with no frame
+ * clock of its own: cb(ctx) runs on the machine thread after each frame is
+ * published (a frame identical to the previous one is not published again).
+ * Keep it quick (post an event and return) and do not call into the session
+ * from it. Passing NULL stops the calls, and returns only after any call in
+ * flight has finished, so ctx may be freed right after. */
+typedef void (*a2600session_frame_cb)(void *ctx);
+void a2600session_set_frame_callback(a2600session *s, a2600session_frame_cb cb, void *ctx);
+/* Frames the machine has run since it started, published or not: ask this
+ * "is the machine running", not copy_frame's serial "is the picture
+ * changing". */
+uint64_t a2600session_frame_count(a2600session *s);
 /* 60 or 50: the current ROM's refresh rate. */
 int  a2600session_refresh_rate(a2600session *s);
 
@@ -217,7 +229,8 @@ void a2600session_press(a2600session *s, int target, int down);
  * (paddle -1) on `port`: value in -32767..32767. Continuous; the last value
  * per frame wins. */
 void a2600session_analog(a2600session *s, int port, int paddle, int value);
-/* Momentary console switches as a whole: press, hold for `frames`, release.
+/* Momentary console switches as a whole: press, hold ~7 frames, release (the
+ * machine thread does the release; this returns at once).
  * What the Select/Reset menu items do. */
 void a2600session_switch_pulse(a2600session *s, int sw);
 /* Current position of a toggling switch (Color/B&W: 1 = colour; difficulty:

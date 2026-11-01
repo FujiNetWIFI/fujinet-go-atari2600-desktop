@@ -13,6 +13,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+#include <atomic>
 #include <chrono>
 #include <map>
 #include <random>
@@ -43,13 +44,13 @@ namespace {
   {
     std::vector<uInt32> px; StellaHost::FrameInfo info;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
-    int got = 0;
+    // A frame identical to its predecessor is not published again, so count
+    // the machine's frames; the copy keeps the caller's serial current.
+    const uInt64 start = host.frameCount();
     while(std::chrono::steady_clock::now() < deadline)
     {
-      if(host.copyFrame(px, info, &serial))
-      {
-        if(++got >= count) return true;
-      }
+      host.copyFrame(px, info, &serial);
+      if(host.frameCount() >= start + static_cast<uInt64>(count)) return true;
       std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     return false;
@@ -127,6 +128,34 @@ int main()
   uInt64 serial = 0;
   check(waitFrames(host, serial, 60, 5000), "60 frames arrive within 5 s");
   check(frameNonBlank(host), "the CONFIG client painted something (frame is not blank)");
+
+  // Pacing: a display ticking faster than the machine (144 Hz here) must not
+  // speed it up -- only a tick stream near the machine's own rate may drive
+  // it. 2 s of NTSC is 120 frames either way; the window is wide for a
+  // loaded runner.
+  {
+    auto frames2s = [&](bool ticks) {
+      std::atomic<bool> stop{false};
+      std::thread ticker([&] {
+        while(!stop.load())
+        {
+          host.notifyVsync(0);
+          std::this_thread::sleep_for(std::chrono::microseconds(6944));
+        }
+      });
+      if(!ticks) { stop = true; ticker.join(); }
+      const uInt64 a = host.frameCount();
+      std::this_thread::sleep_for(std::chrono::seconds(2));
+      const uInt64 n = host.frameCount() - a;
+      if(ticks) { stop = true; ticker.join(); }
+      return n;
+    };
+    const uInt64 idle = frames2s(false), fast = frames2s(true);
+    std::printf("frames in 2 s: no ticks %llu, 144 Hz ticks %llu\n",
+                (unsigned long long)idle, (unsigned long long)fast);
+    check(idle >= 100 && idle <= 135, "no ticks: the machine runs near 60 fps");
+    check(fast >= 100 && fast <= 135, "144 Hz ticks do not speed the machine up");
+  }
 
   // The resampler counts floats, not frames: a short count left half of every
   // device buffer as stale stack, which played as a buzz over CONFIG's silence.

@@ -255,6 +255,8 @@ void StellaHost::emulateFrame()
   // pollInput (our EventHandlerFNGO::pollEvent inside the input window),
   // then RIOT port latching and the Time Machine -- the same per-frame
   // housekeeping OSystem::mainLoop does.
+  ++myFrameCount;
+  releasePulses();
   os.eventHandler().poll(TimerManager::getTicks());
 
   DispatchResult result;
@@ -326,15 +328,59 @@ void StellaHost::publishFrame()
 
   const uInt32 w = tia.width(), h = std::min(tia.height(), surface.height());
 
-  const std::lock_guard<std::mutex> lock(myFrameMutex);
-  myFrame.resize(static_cast<size_t>(w) * h);
-  for(uInt32 y = 0; y < h; ++y)
-    std::memcpy(&myFrame[static_cast<size_t>(y) * w], pixels + static_cast<size_t>(y) * pitch,
-                sizeof(uInt32) * w);
-  myFrameInfo.width = w;
-  myFrameInfo.height = h;
-  myFrameInfo.refreshRate = console.gameRefreshRate();
-  ++myFrameInfo.serial;
+  {
+    const std::lock_guard<std::mutex> lock(myFrameMutex);
+    // A frame identical to the one in the slot is not a new frame: the
+    // serial stays and nobody is called. The machine runs at 60 Hz whatever
+    // it shows and a CONFIG screen or menu does not move, so without this
+    // the frontends would copy, upload and draw the same picture sixty
+    // times a second.
+    bool same = myFrameInfo.serial != 0 && myFrameInfo.width == w && myFrameInfo.height == h &&
+                myFrame.size() == static_cast<size_t>(w) * h;
+    for(uInt32 y = 0; same && y < h; ++y)
+      same = std::memcmp(&myFrame[static_cast<size_t>(y) * w], pixels + static_cast<size_t>(y) * pitch,
+                         sizeof(uInt32) * w) == 0;
+    if(same) return;
+    myFrame.resize(static_cast<size_t>(w) * h);
+    for(uInt32 y = 0; y < h; ++y)
+      std::memcpy(&myFrame[static_cast<size_t>(y) * w], pixels + static_cast<size_t>(y) * pitch,
+                  sizeof(uInt32) * w);
+    myFrameInfo.width = w;
+    myFrameInfo.height = h;
+    myFrameInfo.refreshRate = console.gameRefreshRate();
+    ++myFrameInfo.serial;
+  }
+
+  const std::lock_guard<std::mutex> lock(myCbMutex);
+  if(myFrameCb) myFrameCb(myFrameCbCtx);
+}
+
+void StellaHost::setFrameCallback(FrameCallback cb, void* ctx)
+{
+  const std::lock_guard<std::mutex> lock(myCbMutex);
+  myFrameCb = cb;
+  myFrameCbCtx = ctx;
+}
+
+void StellaHost::pulseEvent(Event::Type type, int frames)
+{
+  if(!myRunning.load()) return;
+  enqueueEvent(type, 1);
+  const std::lock_guard<std::mutex> lock(myPulseMutex);
+  myPulses.emplace_back(myFrameCount.load() + static_cast<uInt64>(frames), type);
+}
+
+void StellaHost::releasePulses()
+{
+  std::vector<Event::Type> due;
+  {
+    const std::lock_guard<std::mutex> lock(myPulseMutex);
+    const uInt64 now = myFrameCount.load();
+    for(size_t i = 0; i < myPulses.size();)
+      if(myPulses[i].first <= now) { due.push_back(myPulses[i].second); myPulses.erase(myPulses.begin() + i); }
+      else ++i;
+  }
+  for(Event::Type t : due) enqueueEvent(t, 0);
 }
 
 void StellaHost::pace(uInt64 cyclesRun)
@@ -348,7 +394,12 @@ void StellaHost::pace(uInt64 cyclesRun)
   // between the machine's rate and the panel's).
   {
     std::unique_lock<std::mutex> lock(myVsyncMutex);
-    const bool recent = myVsyncLastNs != 0 && (monoNs() - myVsyncLastNs) < VSYNC_RECENT_NS;
+    // Only a tick stream near the machine's own rate can drive it: a 120 or
+    // 144 Hz display would run it too fast, a 50 Hz one too slow. +/-8%
+    // locks 59.94, 60 and 59.997 Hz panels; the rest pace by the wall clock.
+    const bool recent = myVsyncLastNs != 0 && (monoNs() - myVsyncLastNs) < VSYNC_RECENT_NS &&
+                        myVsyncPeriodNs > frameNs * 92 / 100 &&
+                        myVsyncPeriodNs < frameNs * 108 / 100;
     if(recent)
     {
       const uInt64 seen = myVsyncSerial;
@@ -456,7 +507,15 @@ void StellaHost::notifyVsync(Int64)
 {
   {
     const std::lock_guard<std::mutex> lock(myVsyncMutex);
-    myVsyncLastNs = monoNs();
+    const Int64 now = monoNs();
+    const Int64 dt = now - myVsyncLastNs;
+    if(myVsyncLastNs == 0 || dt <= 0 || dt > VSYNC_RECENT_NS)
+      myVsyncPeriodNs = 0;
+    else if(myVsyncPeriodNs == 0)
+      myVsyncPeriodNs = dt;
+    else
+      myVsyncPeriodNs += (dt - myVsyncPeriodNs) / 8;
+    myVsyncLastNs = now;
     ++myVsyncSerial;
   }
   myVsyncCv.notify_all();

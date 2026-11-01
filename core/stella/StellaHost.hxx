@@ -106,6 +106,17 @@ class StellaHost
     // updates it and returns true. dst is resized to width*height pixels
     // (XRGB8888, one uInt32 per pixel, 160 wide). Pass 0 to force a copy.
     bool copyFrame(std::vector<uInt32>& dst, FrameInfo& info, uInt64* serialInOut);
+    // Called on the Stella thread right after each frame is published (a
+    // frame identical to the previous one is not published again), so a
+    // frontend with no frame clock can draw when there is something to draw.
+    // Keep it quick and do not call back into the host. set(nullptr) returns
+    // only after a call in flight has finished.
+    using FrameCallback = void (*)(void*);
+    void setFrameCallback(FrameCallback cb, void* ctx);
+    // Frames the machine has run, published or not (for "is it running").
+    uInt64 frameCount() const { return myFrameCount.load(); }
+    // Press `type`, release it after `frames` machine frames.
+    void pulseEvent(Event::Type type, int frames);
     // Feed the UI's frame-clock ticks (CLOCK_MONOTONIC ns). While a steady
     // stream arrives the emulator phase-locks one frame per tick.
     void notifyVsync(Int64 frameTimeNs);
@@ -192,12 +203,20 @@ class StellaHost
     std::mutex myFrameMutex;
     std::vector<uInt32> myFrame;
     FrameInfo myFrameInfo;
+    std::mutex myCbMutex;
+    FrameCallback myFrameCb{nullptr};
+    void* myFrameCbCtx{nullptr};
+    std::atomic<uInt64> myFrameCount{0};
+    std::mutex myPulseMutex;
+    std::vector<std::pair<uInt64, Event::Type>> myPulses;  // release at frame N
+    void releasePulses();
 
     // pacing
     std::mutex myVsyncMutex;
     std::condition_variable myVsyncCv;
     uInt64 myVsyncSerial{0};
     Int64 myVsyncLastNs{0};
+    Int64 myVsyncPeriodNs{0};   // smoothed tick interval; 0 = not yet known
     Int64 myNextFrameNs{0};
 
     StellaHost(const StellaHost&) = delete;

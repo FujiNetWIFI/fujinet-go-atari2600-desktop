@@ -10,7 +10,7 @@
 
 #include "a2600session.h"
 
-class DisplayWidget;
+class DisplayView;
 class KeypadWindow;
 class QAction;
 
@@ -35,12 +35,13 @@ private:
     void openCart(const QString &path);
     void loadMedia(const QString &path);
     void toggleKeypad();
+    void useSoftwareDisplay();
     void showSettings();
     void restartSession();
     void showAbout();
 
     a2600session *m_session;
-    DisplayWidget *m_display = nullptr;
+    DisplayView *m_display = nullptr;
     KeypadWindow *m_keypad = nullptr;
     QLabel *m_status = nullptr;
     QLabel *m_dot = nullptr;

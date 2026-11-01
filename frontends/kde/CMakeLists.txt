@@ -9,7 +9,8 @@
 
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 6.4 COMPONENTS Widgets QUIET)
+# Qt 6.7 for QRhiWidget (the GPU display); ShaderTools bakes its shaders.
+find_package(Qt6 6.7 COMPONENTS Widgets GuiPrivate ShaderTools QUIET)
 if(NOT Qt6_FOUND)
   message(STATUS "kde frontend: Qt6 Widgets not found -- skipping")
   return()
@@ -19,13 +20,19 @@ add_executable(fujinet-go-atari2600-kde
   main.cpp
   MainWindow.cpp
   DisplayWidget.cpp
+  SoftDisplayWidget.cpp
+  FrameFeed.cpp
   KeyForward.cpp
   SettingsDialog.cpp
   FujiNetWindows.cpp
   keypad/KeypadWindow.cpp
   debugger/DebuggerWindow.cpp
 )
-target_link_libraries(fujinet-go-atari2600-kde PRIVATE a2600_session Qt6::Widgets)
+target_link_libraries(fujinet-go-atari2600-kde PRIVATE a2600_session Qt6::Widgets Qt6::GuiPrivate)
+# The display's shaders, baked for every backend and embedded as resources.
+qt_add_shaders(fujinet-go-atari2600-kde "display_shaders"
+  PREFIX "/shaders"
+  FILES shaders/display.vert shaders/display.frag)
 target_compile_options(fujinet-go-atari2600-kde PRIVATE -Wall -Wextra)
 target_compile_definitions(fujinet-go-atari2600-kde PRIVATE
   A2600_SOURCE_ICON_DIR="${CMAKE_SOURCE_DIR}/data/icons")
