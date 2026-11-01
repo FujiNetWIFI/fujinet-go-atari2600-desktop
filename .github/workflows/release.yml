@@ -91,7 +91,7 @@ jobs:
             libx11-dev libxext-dev libxrandr-dev libxi-dev libxss-dev \
             libxcursor-dev libxkbcommon-dev libwayland-dev libdrm-dev \
             libgbm-dev libgl1-mesa-dev libpulse-dev libasound2-dev \
-            libxtst-dev dpkg-dev rpm python3-venv libssl-dev
+            libxtst-dev dpkg-dev rpm python3-venv libssl-dev file
 
       # Statically linked (unlike linux.yml's push-CI job, which links the
       # packaged shared SDL3 for speed), so the shipped .deb/.rpm/.tar.gz
