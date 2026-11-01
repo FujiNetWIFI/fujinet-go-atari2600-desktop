@@ -150,11 +150,20 @@ int main()
       if(ticks) { stop = true; ticker.join(); }
       return n;
     };
+    // The upper bound is the one that matters (a machine locked to a fast tick
+    // stream runs too fast). The lower bound holds only where the OS can sleep
+    // for a frame: a loaded macOS runner turns a 16 ms sleep into 100 ms.
+    const auto s0 = std::chrono::steady_clock::now();
+    for(int i = 0; i < 10; ++i)
+      std::this_thread::sleep_for(std::chrono::microseconds(16'667));
+    const bool sleepsAccurate =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - s0).count() < 0.25;
     const uInt64 idle = frames2s(false), fast = frames2s(true);
-    std::printf("frames in 2 s: no ticks %llu, 144 Hz ticks %llu\n",
-                (unsigned long long)idle, (unsigned long long)fast);
-    check(idle >= 100 && idle <= 135, "no ticks: the machine runs near 60 fps");
-    check(fast >= 100 && fast <= 135, "144 Hz ticks do not speed the machine up");
+    std::printf("frames in 2 s: no ticks %llu, 144 Hz ticks %llu (%s sleeps)\n",
+                (unsigned long long)idle, (unsigned long long)fast,
+                sleepsAccurate ? "accurate" : "coarse");
+    check(idle <= 135 && (!sleepsAccurate || idle >= 100), "no ticks: the machine runs near 60 fps");
+    check(fast <= 135 && (!sleepsAccurate || fast >= 100), "144 Hz ticks do not speed the machine up");
   }
 
   // The resampler counts floats, not frames: a short count left half of every
