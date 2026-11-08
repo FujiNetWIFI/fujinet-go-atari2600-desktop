@@ -17,6 +17,10 @@ GtkWidget *a2600_window_new(AdwApplication *app, a2600session *session);
 const char *a2600_icon_name(void);
 void a2600_window_toast(A2600Window *self, const char *text);
 
+/* The Help context the main window shows now: "main", or "prefs/Machine"
+ * while Preferences is open. */
+const char *a2600_window_help_context(A2600Window *self);
+
 /* The accent colour (A2600SESSION_ACCENT_RGB) as a CSS class every window
  * can use: ".a2600-accent" paints a widget's background in it, and
  * ".a2600-accent-text" its label. Installed once by the main window. */

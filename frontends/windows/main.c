@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "help/help_window.h"
 #include "a2600session.h"
 #include "debugger/dbg_window.h"
 #include "display.h"
@@ -136,6 +137,8 @@ static void build_menu(HWND hwnd)
     AppendMenuA(fuji, MF_STRING, IDM_FUJINET_CONFIG, "&Configuration");
     AppendMenuA(fuji, MF_STRING, IDM_FUJINET_LOG, "Console &Log");
 
+    AppendMenuA(help, MF_STRING, IDM_HELP, APP_TITLE " &Help\tCtrl+Shift+H");
+    AppendMenuA(help, MF_SEPARATOR, 0, NULL);
     AppendMenuA(help, MF_STRING, IDM_ABOUT, "&About " APP_TITLE);
 
     AppendMenuA(bar, MF_POPUP, (UINT_PTR)machine, "&Machine");
@@ -252,6 +255,7 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     switch (msg) {
     case WM_COMMAND:
         switch (LOWORD(wp)) {
+        case IDC_SET_HELP: a2600_help_for(hwnd); return 0;
         case IDC_SET_TV:
             if (HIWORD(wp) == CBN_SELCHANGE) {
                 int sel = (int)SendMessageA(GetDlgItem(hwnd, IDC_SET_TV), CB_GETCURSEL, 0, 0);
@@ -477,6 +481,13 @@ static void show_settings(HINSTANCE inst)
                       a2600session_get_int(g_session, "enable_audio", 1)); y += 26;
     settings_checkbox(g_settings_window, inst, "Gamepads", IDC_SET_GAMEPAD, 16, y, 200,
                       a2600session_get_int(g_session, "enable_gamepad", 1));
+    y += 36;
+    {
+        HWND hb = CreateWindowExA(0, "BUTTON", "Help", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 16, y, 80, 26,
+                                  g_settings_window, (HMENU)(INT_PTR)IDC_SET_HELP, inst, NULL);
+        SendMessageA(hb, WM_SETFONT, (WPARAM)font, TRUE);
+        a2600_help_set_context(g_settings_window, "prefs/Machine", 1);
+    }
 
     SetTimer(g_settings_window, IDT_SETTINGS_PADS, 1000, NULL);
     ShowWindow(g_settings_window, SW_SHOW);
@@ -485,7 +496,8 @@ static void show_settings(HINSTANCE inst)
 /* ---- FujiNet console log --------------------------------------------------- */
 
 static HWND g_log_window;
-static HWND g_log_edit;
+static HWND g_log_edit, g_log_help;
+#define LOG_BAR 34
 
 static void log_refresh(void)
 {
@@ -526,9 +538,13 @@ static LRESULT CALLBACK log_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_SIZE: {
         RECT rc;
         GetClientRect(hwnd, &rc);
-        if (g_log_edit) MoveWindow(g_log_edit, 0, 0, rc.right - rc.left, rc.bottom - rc.top, TRUE);
+        if (g_log_edit) MoveWindow(g_log_edit, 0, LOG_BAR, rc.right - rc.left, rc.bottom - rc.top - LOG_BAR, TRUE);
+        if (g_log_help) MoveWindow(g_log_help, rc.right - 84, 4, 76, LOG_BAR - 8, TRUE);
         return 0;
     }
+    case WM_COMMAND:
+        if (LOWORD(wp) == IDC_LOG_HELP) { a2600_help_for(hwnd); return 0; }
+        break;
     case WM_TIMER:
         if (wp == IDT_LOG_REFRESH) log_refresh();
         return 0;
@@ -539,6 +555,7 @@ static LRESULT CALLBACK log_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         KillTimer(hwnd, IDT_LOG_REFRESH);
         g_log_window = NULL;
         g_log_edit = NULL;
+        g_log_help = NULL;
         return 0;
     }
     return DefWindowProcA(hwnd, msg, wp, lp);
@@ -569,6 +586,11 @@ static void show_fujinet_log(HINSTANCE inst)
         WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
         0, 0, rc.right - rc.left, rc.bottom - rc.top, g_log_window, (HMENU)(INT_PTR)IDC_LOG_EDIT, inst, NULL);
     SendMessageA(g_log_edit, WM_SETFONT, (WPARAM)GetStockObject(ANSI_FIXED_FONT), TRUE);
+    g_log_help = CreateWindowA("BUTTON", "Help", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 10, 10,
+                               g_log_window, (HMENU)(INT_PTR)IDC_LOG_HELP, inst, NULL);
+    SendMessageA(g_log_help, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+    a2600_help_set_context(g_log_window, "fujilog", 1);
+    SendMessageA(g_log_window, WM_SIZE, 0, 0);
     SetTimer(g_log_window, IDT_LOG_REFRESH, 1000, NULL);
     log_refresh();
     ShowWindow(g_log_window, SW_SHOW);
@@ -736,6 +758,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
             ShellExecuteA(hwnd, "open", a2600session_fujinet_webui_url(g_session), NULL, NULL, SW_SHOWNORMAL);
             return 0;
+        case IDM_HELP: a2600_help_for(hwnd); return 0;
         case IDM_ABOUT:
             MessageBoxA(hwnd,
                 APP_TITLE " " A2600_VERSION_STRING "\n\n"
@@ -804,6 +827,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     g_hwnd = CreateWindowEx(WS_EX_ACCEPTFILES, WIN_CLASS, APP_TITLE, WS_OVERLAPPEDWINDOW,
                             CW_USEDEFAULT, CW_USEDEFAULT, 976, 780, NULL, NULL, inst, NULL);
     if (!g_hwnd) return 1;
+    a2600_help_set_context(g_hwnd, "main", 0);       /* F1 is the console's SELECT here */
     build_menu(g_hwnd);
     CheckMenuItem(GetMenu(g_hwnd), IDM_TV_ASPECT, MF_BYCOMMAND | (g_tv_aspect ? MF_CHECKED : MF_UNCHECKED));
     CheckMenuItem(GetMenu(g_hwnd), IDM_SMOOTH, MF_BYCOMMAND | (g_smooth ? MF_CHECKED : MF_UNCHECKED));
@@ -834,6 +858,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
          * regardless of which child control has the focus. */
         if (a2600_debugger_pretranslate(&msg)) continue;
         if (a2600_keypad_pretranslate(&msg)) continue;
+        if (a2600_help_pretranslate(&msg)) continue;
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }

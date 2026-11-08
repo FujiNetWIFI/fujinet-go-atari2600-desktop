@@ -28,6 +28,7 @@
 
 #include "a2600debug.h"
 #include "../window.h"
+#include "../help/help_window.h"
 
 #define DISASM_WINDOW 48
 #define TRACE_MAX 512
@@ -755,8 +756,17 @@ static void on_fuji_clear(GtkButton *b, gpointer ud)
     refresh_fujinet(w, TRUE);
 }
 
+/* Help's contexts (a2600help.h), one per tab */
+static const char *const k_tab_contexts[] = {
+    "debugger/prompt", "debugger/cpu", "debugger/disassembly", "debugger/tia",
+    "debugger/io", "debugger/breaks", "debugger/states", "debugger/fujinet",
+};
+
 static void on_switch_page(GtkNotebook *nb, GtkWidget *page, guint num, gpointer ud)
 {
+    DbgWin *hw = ud;
+    if (num < G_N_ELEMENTS(k_tab_contexts))
+        a2600_help_set_context(hw->win, k_tab_contexts[num]);
     DbgWin *w = ud;
     (void)nb; (void)page;
     if ((int)num == w->fuji_page) refresh_fujinet(w, FALSE);
@@ -822,6 +832,7 @@ static gboolean on_key(GtkEventControllerKey *c, guint keyval, guint code,
     DbgWin *w = ud;
     (void)c; (void)code;
     switch (keyval) {
+    case GDK_KEY_F1: a2600_help_for(w->win); return TRUE;
     case GDK_KEY_F5: on_run(NULL, w); return TRUE;
     case GDK_KEY_F7: on_step(NULL, w); return TRUE;
     case GDK_KEY_F8:
@@ -1185,8 +1196,11 @@ void a2600_debugger_show(GtkWindow *parent, a2600session *session)
             gtk_notebook_set_current_page(GTK_NOTEBOOK(notebook),
                                           g_ascii_strcasecmp(tab, "fujinet") == 0 ? w->fuji_page : atoi(tab));
     }
+    a2600_help_set_context(w->win, k_tab_contexts[gtk_notebook_get_current_page(GTK_NOTEBOOK(notebook)) > 0
+                                                  ? gtk_notebook_get_current_page(GTK_NOTEBOOK(notebook)) : 0]);
 
     header = adw_header_bar_new();
+    adw_header_bar_pack_end(ADW_HEADER_BAR(header), a2600_help_button(NULL));
     toolbar = adw_toolbar_view_new();
     adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar), header);
     adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(toolbar), root);

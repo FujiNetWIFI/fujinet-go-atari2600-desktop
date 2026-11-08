@@ -34,6 +34,11 @@ family (`fujinet-go-adam-desktop`, `-apple2-`, `-coco-`, `-msx-`, `-intv-`,
   between the 2600 and FujiNet, both ways, with hex; always recording,
   even before the debugger opens). Stepping: Step, Trace, Scan+1,
   Frame+1, Rewind, Unwind, Run To.
+- **Built-in Help.** **Help ▸ FujiNet Go Atari 2600 Help** (Ctrl+Shift+H,
+  ⌘? on a Mac) opens a searchable Help, and the Help buttons in Preferences,
+  the Keypads window, the debugger and the console log open the topic for what
+  they show. The text is [data/help/help.md](data/help/help.md), which GitHub
+  shows as it is; the build embeds it and every frontend lays it out natively.
 - **Controllers you choose.** Preferences sets each port to Auto (Stella's
   ROM database and controller detector), Joystick, Paddles, Driving or
   Keypad, applied live — a game booted through FujiNet survives the change.

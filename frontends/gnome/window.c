@@ -16,6 +16,7 @@
 
 #include "display.h"
 #include "fujilog.h"
+#include "help/help_window.h"
 #include "prefs.h"
 #include "debugger/dbg_window.h"
 #include "keypad/keypad_window.h"
@@ -101,6 +102,14 @@ static gboolean on_key_pressed(GtkEventControllerKey *ctrl, guint keyval,
     guint32 keysym;
     int sa;
     (void)ctrl;
+
+    /* F1 is the console's SELECT in the window itself, and Help while
+     * Preferences or another dialog is open */
+    if (keyval == GDK_KEY_F1 && adw_application_window_get_visible_dialog(ADW_APPLICATION_WINDOW(self)) &&
+        !(state & GDK_MODIFIER_MASK & ~GDK_LOCK_MASK)) {
+        a2600_help_for(GTK_WINDOW(self));
+        return TRUE;
+    }
 
     /* The window's own keys, deliberately not bindable: they are how you
      * reach the panels that do the binding. */
@@ -497,6 +506,24 @@ static void action_smooth(GSimpleAction *a, GVariant *p, gpointer user_data)
     a2600session_set_int(self->session, "smooth", sm ? 1 : 0);
 }
 
+const char *a2600_window_help_context(A2600Window *self)
+{
+    AdwDialog *d = adw_application_window_get_visible_dialog(ADW_APPLICATION_WINDOW(self));
+    return d && ADW_IS_PREFERENCES_DIALOG(d) ? "prefs/Machine" : "main";
+}
+
+/* app.help: every window's Ctrl+Shift+H, for what it shows. Not a cast of
+ * the active window: it can be the debugger, the controllers or the log. */
+static void action_help(GSimpleAction *a, GVariant *p, gpointer user_data)
+{
+    (void)a; (void)p;
+    a2600_help_for(gtk_application_get_active_window(GTK_APPLICATION(user_data)));
+}
+
+static const GActionEntry app_actions[] = {
+    { "help", action_help, NULL, NULL, NULL, { 0 } },
+};
+
 static const GActionEntry win_actions[] = {
     { "open", action_open, NULL, NULL, NULL, { 0 } },
     { "eject", action_eject, NULL, NULL, NULL, { 0 } },
@@ -554,6 +581,7 @@ static GMenu *build_menu(void)
     g_menu_append_section(menu, NULL, G_MENU_MODEL(fuji));
 
     g_menu_append(app, "_Preferences", "win.prefs");
+    g_menu_append(app, "_Help", "app.help");
     g_menu_append(app, "_About FujiNet Go Atari 2600", "win.about");
     g_menu_append_section(menu, NULL, G_MENU_MODEL(app));
 
@@ -606,12 +634,17 @@ GtkWidget *a2600_window_new(AdwApplication *app, a2600session *session)
 
     g_action_map_add_action_entries(G_ACTION_MAP(self), win_actions,
                                     G_N_ELEMENTS(win_actions), self);
+    if (!g_action_map_lookup_action(G_ACTION_MAP(app), "help"))
+        g_action_map_add_action_entries(G_ACTION_MAP(app), app_actions,
+                                        G_N_ELEMENTS(app_actions), app);
     {
         static const char *const prefs_accels[] = { "<Control>comma", NULL };
         static const char *const open_accels[] = { "<Control>o", NULL };
         static const char *const reboot_accels[] = { "<Control>r", NULL };
         static const char *const ldiff_accels[] = { "<Alt>l", NULL };
         static const char *const rdiff_accels[] = { "<Alt>r", NULL };
+        static const char *const help_accels[] = { "<Control><Shift>h", NULL };
+        gtk_application_set_accels_for_action(GTK_APPLICATION(app), "app.help", help_accels);
         gtk_application_set_accels_for_action(GTK_APPLICATION(app), "win.prefs", prefs_accels);
         gtk_application_set_accels_for_action(GTK_APPLICATION(app), "win.open", open_accels);
         gtk_application_set_accels_for_action(GTK_APPLICATION(app), "win.reboot-config", reboot_accels);

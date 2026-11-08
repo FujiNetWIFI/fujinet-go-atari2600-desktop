@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "../help/help_window.h"
 #include "../key_forward.h"
 
 #define PAD_CLASS "FujiNetGoAtari2600Keypad"
@@ -54,7 +55,7 @@ static pad_button g_btn[A2600_TARGET_COUNT];
 static int g_nbtn;
 static int g_held = -1;          /* button index under the captured mouse */
 static int g_map_state = -2;     /* -2 idle, -1 armed, >=0 awaiting a key/button */
-static RECT g_map_rc, g_defaults_rc, g_hint_rc;
+static RECT g_map_rc, g_defaults_rc, g_help_rc, g_hint_rc;
 static RECT g_head_rc[2], g_type_rc[2];
 static int g_detected[2];
 static char g_hint[160];
@@ -126,7 +127,8 @@ static void layout(void)
 
     SetRect(&g_map_rc, MARGIN, y, MARGIN + 70, y + 30);
     SetRect(&g_defaults_rc, MARGIN + 76, y, MARGIN + 76 + 84, y + 30);
-    SetRect(&g_hint_rc, MARGIN + 76 + 84 + 10, y, g_total_w - MARGIN, y + 30);
+    SetRect(&g_help_rc, g_total_w - MARGIN - 64, y, g_total_w - MARGIN, y + 30);
+    SetRect(&g_hint_rc, MARGIN + 76 + 84 + 10, y, g_help_rc.left - 6, y + 30);
     g_total_h = y + 30 + MARGIN;
 }
 
@@ -242,6 +244,7 @@ static void paint_panel(HDC dc)
 
     draw_button(dc, &g_map_rc, g_map_state == -2 ? "Map" : "Cancel", 0, g_map_state != -2);
     draw_button(dc, &g_defaults_rc, "Defaults", 0, 0);
+    draw_button(dc, &g_help_rc, "Help", 0, 0);
 
     if (g_hint[0]) {
         SetTextColor(dc, GetSysColor(COLOR_GRAYTEXT));
@@ -279,6 +282,7 @@ static LRESULT CALLBACK pad_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         int i = hit(x, y);
 
         if (PtInRect(&g_map_rc, p)) { set_map_state(g_map_state == -2 ? -1 : -2); return 0; }
+        if (PtInRect(&g_help_rc, p)) { a2600_help_show(hwnd, "keypad"); return 0; }
         if (PtInRect(&g_defaults_rc, p)) {
             a2600session_bindings_reset(g_session);
             InvalidateRect(hwnd, NULL, TRUE);
@@ -406,6 +410,7 @@ void a2600_keypad_window_toggle(HWND parent, a2600session *session)
                                   want.right - want.left, want.bottom - want.top,
                                   parent, NULL, wc.hInstance, NULL);
         if (!g_panel) return;
+        a2600_help_set_context(g_panel, "keypad", 0);   /* keys here go to the console */
         g_detected[0] = g_detected[1] = -1;
     }
 

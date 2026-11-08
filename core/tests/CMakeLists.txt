@@ -27,6 +27,11 @@ target_link_libraries(session_test PRIVATE a2600_session)
 add_test(NAME session COMMAND session_test)
 set_tests_properties(session PROPERTIES TIMEOUT 120)
 
+# The built-in Help covers every setting, key and context.
+add_executable(help_test help_test.c)
+target_link_libraries(help_test PRIVATE a2600_session)
+add_test(NAME help COMMAND help_test)
+
 # The remappable binding table and the keyboard translator, pure.
 add_executable(bindings_test bindings_test.c)
 target_link_libraries(bindings_test PRIVATE a2600_session)

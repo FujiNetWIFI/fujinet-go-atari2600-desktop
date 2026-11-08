@@ -16,7 +16,8 @@
       cartridge firmware's own protocol sources, so it behaves exactly as the
       hardware does. Joysticks, paddles, driving controllers and keypads can
       be chosen per port, gamepads are picked up as they are plugged in, and
-      Stella's complete debugger is available in a native window.
+      Stella's complete debugger is available in a native window, and a
+      built-in, searchable Help covers all of it.
     </p>
     <p>
       Nothing copyrighted is included: the Atari 2600 has no system ROM, and

@@ -17,13 +17,16 @@
 #include <QPointer>
 #include <QScrollBar>
 #include <QSplitter>
+#include <QShortcut>
 #include <QTabWidget>
+#include <QToolButton>
 #include <QTextCursor>
 #include <QTextBlock>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
 #include "../FujiNetWindows.h"
+#include "../help/HelpWindow.h"
 
 #define DISASM_WINDOW 48
 #define TRACE_MAX 512
@@ -125,9 +128,24 @@ DebuggerWindow::DebuggerWindow(a2600session *session, QWidget *parent)
     tabs->addTab(buildBreaks(), QStringLiteral("Breaks && Traps"));
     tabs->addTab(buildStates(), QStringLiteral("States && Cart"));
     m_fujiPage = tabs->addTab(buildFujinet(), QStringLiteral("FujiNet"));
-    connect(tabs, &QTabWidget::currentChanged, this, [this](int index) {
+    /* a Help button for the tab that shows, and F1 */
+    auto *help = qobject_cast<QToolButton *>(a2600HelpButton(QString()));
+    help->setAutoRaise(false);
+    help->setText(QStringLiteral("Help"));
+    help->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    tabs->setCornerWidget(help, Qt::TopRightCorner);
+    static const char *const kHelpTabs[] = { "prompt", "cpu", "disassembly", "tia", "io", "breaks",
+                                             "states", "fujinet" };
+    auto setContext = [this](int page) {
+        if (page >= 0 && page < (int)(sizeof kHelpTabs / sizeof kHelpTabs[0]))
+            setProperty("a2600HelpContext", QStringLiteral("debugger/%1").arg(QLatin1String(kHelpTabs[page])));
+    };
+    new QShortcut(QKeySequence(Qt::Key_F1), this, [this] { a2600HelpFor(this); });
+    connect(tabs, &QTabWidget::currentChanged, this, [this, setContext](int index) {
+        setContext(index);
         if (index == m_fujiPage) refreshFujinet(false);
     });
+    setContext(tabs->currentIndex());
     /* a page number, or "fujinet" */
     if (qEnvironmentVariableIsSet("A2600_DEBUGGER_TAB")) {
         const QString tab = qEnvironmentVariable("A2600_DEBUGGER_TAB").trimmed();

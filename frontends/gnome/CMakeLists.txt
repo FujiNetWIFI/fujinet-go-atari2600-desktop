@@ -26,6 +26,7 @@ add_executable(fujinet-go-atari2600-gnome
   display.c
   prefs.c
   fujilog.c
+  help/help_window.c
   keypad/keypad_window.c
   debugger/dbg_window.c
 )

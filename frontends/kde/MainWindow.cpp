@@ -27,6 +27,7 @@
 #include "KeyForward.h"
 #include "SettingsDialog.h"
 #include "debugger/DebuggerWindow.h"
+#include "help/HelpWindow.h"
 #include "keypad/KeypadWindow.h"
 
 static const char *const kCartFilter =
@@ -36,6 +37,7 @@ MainWindow::MainWindow(a2600session *session, QWidget *parent)
     : QMainWindow(parent), m_session(session)
 {
     setWindowTitle(QStringLiteral("FujiNet Go Atari 2600"));
+    setProperty("a2600HelpContext", QStringLiteral("main"));
     /* 320x240 at 3x. */
     resize(960, 720 + 60);
     setAcceptDrops(true);
@@ -164,6 +166,18 @@ void MainWindow::buildMenus()
     });
 
     QMenu *help = menuBar()->addMenu(QStringLiteral("&Help"));
+    {
+        /* works from every window of the app (the Controllers window and the
+         * Debugger have the keyboard too) */
+        QAction *helpAct = help->addAction(QStringLiteral("FujiNet Go Atari 2600 &Help"));
+        helpAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_H));
+        helpAct->setShortcutContext(Qt::ApplicationShortcut);
+        addAction(helpAct);
+        connect(helpAct, &QAction::triggered, this, [this] {
+            a2600HelpFor(QApplication::activeWindow() ? QApplication::activeWindow() : this);
+        });
+    }
+    help->addSeparator();
     help->addAction(QStringLiteral("&About FujiNet Go Atari 2600"), this, &MainWindow::showAbout);
 }
 

@@ -13,6 +13,7 @@
  */
 
 #include "dbg_window.h"
+#include "../help/help_window.h"
 
 #include <commctrl.h>
 #include <commdlg.h>
@@ -42,7 +43,7 @@ enum {
 enum {
     IDC_RUN = 1000, IDC_STEP, IDC_TRACE, IDC_SCAN, IDC_FRAME, IDC_REWIND, IDC_UNWIND,
     IDC_STATUS, IDC_TABS,
-    IDC_PROMPT_OUT, IDC_PROMPT_IN, IDC_LOAD_SYMBOLS,
+    IDC_PROMPT_OUT, IDC_PROMPT_IN, IDC_LOAD_SYMBOLS, IDC_HELP_BTN,
     IDC_REG0, IDC_REG_LAST = IDC_REG0 + 5,
     IDC_FLAG0, IDC_FLAG_LAST = IDC_FLAG0 + 6,
     IDC_CYCLES, IDC_RAM_VIEW, IDC_RAM_ADDR, IDC_RAM_VAL,
@@ -61,7 +62,7 @@ enum {
 typedef struct {
     HWND hwnd;
     HWND tabs;
-    HWND run_btn, step_btn, trace_btn, scan_btn, frame_btn, rewind_btn, unwind_btn, status;
+    HWND run_btn, step_btn, trace_btn, scan_btn, frame_btn, rewind_btn, unwind_btn, help_btn, status;
 
     HWND prompt_out, prompt_in, load_symbols;
 
@@ -808,9 +809,11 @@ static void build_controls(debugger *d)
     d->rewind_btn = button(d, "Rewind", IDC_REWIND);
     d->unwind_btn = button(d, "Unwind", IDC_UNWIND);
     d->status = child(d, "STATIC", "Running", SS_RIGHT | SS_ENDELLIPSIS, IDC_STATUS, d->ui);
+    d->help_btn = button(d, "Help", IDC_HELP_BTN);
     {
-        HWND bar[8] = { d->run_btn, d->step_btn, d->trace_btn, d->scan_btn, d->frame_btn, d->rewind_btn, d->unwind_btn, d->status };
-        for (i = 0; i < 8; i++) ShowWindow(bar[i], SW_SHOW);
+        HWND bar[9] = { d->run_btn, d->step_btn, d->trace_btn, d->scan_btn, d->frame_btn, d->rewind_btn, d->unwind_btn,
+                        d->status, d->help_btn };
+        for (i = 0; i < 9; i++) ShowWindow(bar[i], SW_SHOW);
     }
 
     /* Prompt */
@@ -897,8 +900,17 @@ static void build_controls(debugger *d)
     d->fuji_state = mono_view(d, IDC_FUJI_STATE, 0);
 }
 
+/* Help's contexts (a2600help.h), one per tab */
+static const char *const k_tab_contexts[] = {
+    "debugger/prompt", "debugger/cpu", "debugger/disassembly", "debugger/tia",
+    "debugger/io", "debugger/breaks", "debugger/states", "debugger/fujinet",
+};
+
 static void show_page(debugger *d, int page)
 {
+    /* Help, F1 and Ctrl+Shift+H open the tab's section */
+    if (page >= 0 && page < (int)(sizeof k_tab_contexts / sizeof k_tab_contexts[0]))
+        a2600_help_set_context(d->hwnd, k_tab_contexts[page], 1);
     HWND prompt[] = { d->prompt_out, d->prompt_in, d->load_symbols };
     HWND cpu[] = { d->cycles, d->ram_label, d->ram_view, d->ram_addr_label, d->ram_addr, d->ram_val_label, d->ram_val };
     HWND dis[] = { d->bank, d->follow_pc, d->jump_label, d->jump, d->disasm_hint, d->disasm };
@@ -938,7 +950,8 @@ static void layout(debugger *d)
     MoveWindow(d->frame_btn, bx, y, 170, 26, TRUE);  bx += 176;
     MoveWindow(d->rewind_btn, bx, y, 80, 26, TRUE);  bx += 86;
     MoveWindow(d->unwind_btn, bx, y, 80, 26, TRUE);  bx += 86;
-    MoveWindow(d->status, bx, y + 5, client.right - bx - 8 > 40 ? client.right - bx - 8 : 40, 20, TRUE);
+    MoveWindow(d->help_btn, client.right - 8 - 72, y, 72, 26, TRUE);
+    MoveWindow(d->status, bx, y + 5, client.right - bx - 88 > 40 ? client.right - bx - 88 : 40, 20, TRUE);
 
     MoveWindow(d->tabs, 8, 40, client.right - 16, client.bottom - 48, TRUE);
     page = (RECT){ 8, 40, client.right - 8, client.bottom - 8 };
@@ -1104,6 +1117,7 @@ static LRESULT CALLBACK dbg_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case IDC_FRAME: a2600debug_frame(d->dbg, 1); refresh_all(d); return 0;
         case IDC_REWIND: a2600debug_rewind(d->dbg, 1); refresh_all(d); return 0;
         case IDC_UNWIND: a2600debug_unwind(d->dbg, 1); refresh_all(d); return 0;
+        case IDC_HELP_BTN: a2600_help_for(d->hwnd); return 0;
         case IDC_LOAD_SYMBOLS: {
             char m[512];
             a2600debug_load_symbols(d->dbg, m, sizeof m);

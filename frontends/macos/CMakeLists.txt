@@ -22,6 +22,7 @@ add_executable(fujinet-go-atari2600-macos MACOSX_BUNDLE
   AppDelegate.m
   DisplayView.m
   KeyForward.m
+  help/HelpWindow.m
   keypad/KeypadWindow.m
   debugger/DebuggerWindow.m
   "${A2600_ICNS}"

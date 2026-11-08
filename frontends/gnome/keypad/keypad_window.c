@@ -32,6 +32,7 @@
 #include "keypad_window.h"
 
 #include "../window.h"
+#include "../help/help_window.h"
 
 /* ---- singleton state ------------------------------------------------------ */
 
@@ -395,6 +396,8 @@ static void build_window(GtkWindow *parent)
     gtk_box_append(GTK_BOX(root), maprow);
 
     header = adw_header_bar_new();
+    adw_header_bar_pack_end(ADW_HEADER_BAR(header), a2600_help_button("keypad"));
+    a2600_help_set_context(GTK_WINDOW(g_window), "keypad");
     toolbar = adw_toolbar_view_new();
     adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar), header);
     adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(toolbar), root);

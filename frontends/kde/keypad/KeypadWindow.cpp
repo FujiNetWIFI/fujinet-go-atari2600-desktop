@@ -16,6 +16,7 @@
 
 #include "../FujiNetWindows.h"
 #include "../KeyForward.h"
+#include "../help/HelpWindow.h"
 
 /* ---- PadButton ------------------------------------------------------------ */
 
@@ -73,6 +74,7 @@ KeypadWindow::KeypadWindow(a2600session *session, QWidget *parent)
                       | Qt::CustomizeWindowHint), m_session(session)
 {
     setWindowTitle(QStringLiteral("Keypads"));
+    setProperty("a2600HelpContext", QStringLiteral("keypad"));
     setFocusPolicy(Qt::StrongFocus);
 
     auto *root = new QVBoxLayout(this);
@@ -122,6 +124,7 @@ KeypadWindow::KeypadWindow(a2600session *session, QWidget *parent)
     maprow->addWidget(m_mapButton);
     maprow->addWidget(defaults);
     maprow->addWidget(m_hint, 1);
+    maprow->addWidget(a2600HelpButton(QStringLiteral("keypad")));
     root->addLayout(maprow);
 
     connect(&m_captureTimer, &QTimer::timeout, this, &KeypadWindow::pollCapture);

@@ -21,6 +21,7 @@
 #import "KeypadWindow.h"
 
 #import "../KeyForward.h"
+#import "../help/HelpWindow.h"
 
 /* -2 idle, -1 armed and waiting for a target, >= 0 waiting for a key or
  * pad button. */
@@ -159,6 +160,7 @@ static NSString *const kFace[12] = { @"1", @"2", @"3", @"4", @"5", @"6", @"7", @
                     backing:NSBackingStoreBuffered
                       defer:NO];
     [win setTitle:@"Keypads"];
+    A2600SetHelpContext(win, @"keypad");
     /* Floats above the machine's window and stays out of the way. */
     [win setLevel:NSFloatingWindowLevel];
     [win setReleasedWhenClosed:NO];
@@ -200,8 +202,13 @@ static NSString *const kFace[12] = { @"1", @"2", @"3", @"4", @"5", @"6", @"7", @
     [defaults setRefusesFirstResponder:YES];
     [content addSubview:defaults];
 
+    NSButton *helpBtn = A2600HelpButton(@"keypad");
+    [helpBtn setRefusesFirstResponder:YES];
+    [helpBtn setFrameOrigin:NSMakePoint(width - MARGIN - helpBtn.frame.size.width, bottom - 28)];
+    [content addSubview:helpBtn];
+
     _hint = [NSTextField labelWithString:@""];
-    [_hint setFrame:NSMakeRect(MARGIN + 176, bottom - 24, width - MARGIN - 190, 18)];
+    [_hint setFrame:NSMakeRect(MARGIN + 176, bottom - 24, width - MARGIN - 190 - helpBtn.frame.size.width - 6, 18)];
     [_hint setTextColor:[NSColor secondaryLabelColor]];
     [content addSubview:_hint];
 
