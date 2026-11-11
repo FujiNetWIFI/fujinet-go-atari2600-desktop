@@ -23,6 +23,7 @@ add_executable(fujinet-go-atari2600-windows WIN32
   display.c
   keypad/keypad_window.c
   debugger/dbg_window.c
+  debugger/dbg_video.c
   resource.rc
 )
 target_include_directories(fujinet-go-atari2600-windows PRIVATE
