@@ -55,6 +55,7 @@
 
 #include <commctrl.h>
 #include <commdlg.h>
+#include <shlobj.h>
 #include <windowsx.h>
 
 #include <stdarg.h>
@@ -150,6 +151,7 @@ static LRESULT a2600_accent_customdraw(const NMCUSTOMDRAW *cd, int on)
 #define WM_DBG_TAB     (WM_APP + 3)   /* Tab in the console: complete */
 #define WM_DBG_HISTORY (WM_APP + 4)   /* wp: 0 Up (older), 1 Down (newer) in the console */
 #define WM_DBG_SYNC    (WM_APP + 5)   /* resync once a list's notification is over */
+#define WM_DBG_LINE    (WM_APP + 6)   /* a click in a line view: wp control id, lp the line */
 
 #define TIMER_REFRESH 1
 
@@ -158,14 +160,15 @@ static LRESULT a2600_accent_customdraw(const NMCUSTOMDRAW *cd, int on)
 #define MEMVIEW_CLASS "A2600DbgMem"
 #define PAGE_CLASS "A2600DbgPage"
 #define POP_CLASS "A2600DbgPop"
+#define LINES_CLASS "A2600DbgLines"
 
-enum { TAB_CONSOLE, TAB_DISASM, TAB_MEMORY, TAB_BREAKS, TAB_WATCHES, TAB_CART, TAB_TRACE, TAB_HISTORY,
+enum { TAB_CONSOLE, TAB_DISASM, TAB_BASIC, TAB_MEMORY, TAB_BREAKS, TAB_WATCHES, TAB_CART, TAB_TRACE, TAB_HISTORY,
        TAB_VIDEO, TAB_SOUND, TAB_SYMBOLS, TAB_FUJINET, TAB_COUNT };
 
 /* The tabs, in order: the names A2600_DEBUGGER_TAB takes, and their labels
  * (which it takes too). */
 static const struct { const char *name, *label; } k_tabs[TAB_COUNT] = {
-    { "console", "Console" }, { "disassembly", "Disassembly" }, { "memory", "Memory" },
+    { "console", "Console" }, { "disassembly", "Disassembly" }, { "basic", "BASIC" }, { "memory", "Memory" },
     { "breakpoints", "Breakpoints" }, { "watches", "Watches" }, { "cart", "Cart & I/O" },
     { "trace", "Trace" }, { "history", "History" }, { "video", "Video" }, { "sound", "Sound" },
     { "symbols", "Symbols" }, { "fujinet", "FujiNet" },
@@ -190,6 +193,7 @@ enum {
     IDC_WT_ENTRY, IDC_WT_ADD, IDC_WT_LIST, IDC_WT_REMOVE, IDC_WT_MEM, IDC_WT_BRK,
     IDC_SRCH_KIND, IDC_SRCH_ENTRY, IDC_SRCH_NEXT, IDC_SRCH_PREV,
     IDC_CART_TEXT, IDC_SOUND_TEXT,
+    IDC_BAS_FILE, IDC_BAS_FOLDER, IDC_BAS_MAP, IDC_BAS_FILES, IDC_BAS_VIEW,
     IDC_H_REC0, IDC_H_REC1, IDC_H_CLEAR0, IDC_H_CLEAR1, IDC_H_FILTER0, IDC_H_FILTER1, IDC_H_RANGE0, IDC_H_RANGE1,
     IDC_H_TEXT0, IDC_H_TEXT1,
     IDC_FUJI_CLEAR, IDC_FUJI_TEXT, IDC_FUJI_STATE,
@@ -245,6 +249,14 @@ typedef struct {
     int selected;               /* the selected line's address, or -1 */
     a2600debug_line lines[DISASM_MAX];
     int line_count, pc_line;
+
+    /* BASIC: the imported batari Basic source (core/include/a2600srcmap.h) */
+    HWND bas_file_btn, bas_folder_btn, bas_map_btn, bas_files, bas_note, bas_view;
+    int bas_file;               /* the file shown (index into the map), -1 = none */
+    int bas_built;              /* the view holds a rendering */
+    unsigned bas_map_gen, bas_dbg_gen;   /* what the view was built from */
+    uint64_t bas_serial;        /* the stop the view last followed */
+    int bas_stopped, bas_pc_line;
 
     /* video: the page holds its own controls (dbg_video.c) */
     HWND video;
@@ -1405,10 +1417,12 @@ static void refresh_fujinet(debugger *d, int force)
 }
 
 /* One tab's contents. */
+static void refresh_basic(debugger *d);
 static void refresh_tab(debugger *d, int page)
 {
     switch (page) {
     case TAB_DISASM: refresh_disasm(d); break;
+    case TAB_BASIC: refresh_basic(d); break;
     case TAB_MEMORY: refresh_mem(d); break;
     case TAB_BREAKS: refresh_bps(d); break;
     case TAB_WATCHES: refresh_watches(d); break;
@@ -1483,11 +1497,250 @@ static void settle_and_sync(debugger *d, int expect_stop)
     resync(d);
 }
 
+#define LVF_PC 1
+#define LVF_BP 2
+#define LVF_BP_OFF 4   /* a disabled breakpoint: a hollow grey dot */
+#define LVF_DIM 8      /* a line with no code */
+
+static void lv_begin(HWND h);
+static void lv_add(HWND h, const char *text, int flags, int aux);
+static void lv_end(HWND h, int reveal);
+static void lv_top(HWND h);
+
+/* ---- the BASIC page ------------------------------------------------------------- */
+
+/* The map changed (an import, a Load Map): the file list. */
+static void basic_reload(debugger *d)
+{
+    a2600srcmap *map = a2600srcmap_shared();
+    const int count = a2600srcmap_file_count(map);
+    int i;
+
+    SendMessageA(d->bas_files, CB_RESETCONTENT, 0, 0);
+    for (i = 0; i < count; i++) SendMessageA(d->bas_files, CB_ADDSTRING, 0, (LPARAM)a2600srcmap_file_name(map, i));
+    if (d->bas_file >= count) d->bas_file = -1;
+    if (d->bas_file < 0 && count > 0) {
+        int file, line, found = 0;
+        d->bas_file = 0;        /* the first file with any code on it */
+        for (file = 0; file < count && !found; file++) {
+            const int lines = a2600srcmap_line_count(map, file);
+            for (line = 1; line <= lines && !found; line++)
+                if (a2600srcmap_line_has_code(map, file, line)) {
+                    d->bas_file = file;
+                    found = 1;
+                }
+        }
+    }
+    if (d->bas_file >= 0) SendMessageA(d->bas_files, CB_SETCURSEL, (WPARAM)d->bas_file, 0);
+    d->bas_pc_line = 0;
+    lv_top(d->bas_view);
+    if (count == 0)
+        SetWindowTextA(d->bas_note, "Import a .bas file, or a folder of them. The dasm listing (dasm -l, the .lst "
+                                    "batari Basic's 2600basic.bat leaves) puts each line at its address.");
+}
+
+/* Re-renders when the map, the engine (breakpoints, a stop) or the file shown
+ * changed, or a new stop came (which recentres on the machine's line even if
+ * it is the same one). */
+static void refresh_basic(debugger *d)
+{
+    a2600srcmap *map = a2600srcmap_shared();
+    const unsigned map_gen = a2600srcmap_generation(map), dbg_gen = a2600debug_generation(d->dbg);
+    const int stopped = a2600debug_is_stopped(d->dbg) != 0;
+    const uint64_t serial = a2600debug_stop_serial(d->dbg);
+    int pc_file = -1, pc_line = 0, count, i, reveal = -1;
+
+    if (!d->bas_built || map_gen != d->bas_map_gen) {
+        d->bas_map_gen = map_gen;
+        basic_reload(d);
+    } else if (dbg_gen == d->bas_dbg_gen && stopped == d->bas_stopped && serial == d->bas_serial) {
+        return;
+    }
+    d->bas_built = 1;
+    d->bas_dbg_gen = dbg_gen;
+    d->bas_stopped = stopped;
+    if (stopped) {
+        int file = 0, line = 0;
+        if (a2600debug_line_at_pc(d->dbg, &file, &line)) {
+            pc_file = file;
+            pc_line = line;
+        }
+    }
+    if (pc_file >= 0 && pc_file != d->bas_file) {     /* followed into another file */
+        d->bas_file = pc_file;
+        SendMessageA(d->bas_files, CB_SETCURSEL, (WPARAM)pc_file, 0);
+    }
+
+    count = d->bas_file >= 0 ? a2600srcmap_line_count(map, d->bas_file) : 0;
+    lv_begin(d->bas_view);
+    for (i = 1; i <= count; i++) {
+        const int has_code = a2600srcmap_line_has_code(map, d->bas_file, i);
+        const int state = has_code ? a2600debug_line_break_state(d->dbg, d->bas_file, i) : 0;
+        const char *src = a2600srcmap_line_text(map, d->bas_file, i);
+        char text[300];
+        snprintf(text, sizeof text, "%5d  %.250s", i, src ? src : "");
+        lv_add(d->bas_view, text,
+               (pc_file == d->bas_file && i == pc_line ? LVF_PC : 0) | (has_code ? 0 : LVF_DIM) |
+                   (state == 1 ? LVF_BP : state == 2 ? LVF_BP_OFF : 0), i);
+    }
+    {
+        const int line = pc_file == d->bas_file ? pc_line : 0;
+        /* every new stop brings the machine's line into view, even the same line as last time */
+        const int new_stop = stopped && serial != d->bas_serial;
+        if (stopped) d->bas_serial = serial;
+        if (line != d->bas_pc_line || (new_stop && line > 0)) {
+            d->bas_pc_line = line;
+            if (line > 0) reveal = line - 1;
+        }
+    }
+    lv_end(d->bas_view, reveal);
+}
+
+/* The one-line note under the buttons, from an import's result. */
+static void basic_note(debugger *d, const a2600srcmap_import_result *res)
+{
+    char msg[700];
+    const char *sym = strrchr(res->sym_path, '\\');
+    if (!sym) sym = strrchr(res->sym_path, '/');
+    sym = sym ? sym + 1 : res->sym_path;
+    if (res->mapped > 0)
+        snprintf(msg, sizeof msg, "%d file%s, %d line%s with code%s%s%s.", res->files, res->files == 1 ? "" : "s",
+                 res->mapped, res->mapped == 1 ? "" : "s", res->sym_path[0] ? ", symbols from " : "", sym,
+                 res->old_format ? " (old compiler: matched by text)" : "");
+    else
+        snprintf(msg, sizeof msg, "%d file%s loaded, but no listing found: build with batari Basic (it leaves "
+                 "<name>.bas.lst) and use Load Map.", res->files, res->files == 1 ? "" : "s");
+    SetWindowTextA(d->bas_note, msg);
+}
+
+/* Import File / Import Folder, and the A2600_BASIC_IMPORT hook. */
+static void basic_import(debugger *d, const char *path, int folder)
+{
+    a2600srcmap_import_result res;
+    memset(&res, 0, sizeof res);
+    if (a2600debug_basic_import(d->dbg, path, &res) < 0) {
+        SetWindowTextA(d->bas_note, folder ? "No .bas files in that folder." : "Could not read that file.");
+        return;
+    }
+    basic_note(d, &res);
+    d->bas_file = -1;           /* basic_reload picks the first file with code */
+    d->bas_built = 0;
+    d->sym_force = 1;           /* the .sym beside the listing was loaded */
+    resync(d);
+}
+
+/* The source beside the cartridge, once per cartridge, when it is loaded. */
+static void basic_auto(debugger *d)
+{
+    a2600srcmap_import_result res;
+    memset(&res, 0, sizeof res);
+    if (a2600debug_basic_auto_import(d->dbg, &res) != 1) return;
+    basic_note(d, &res);
+    d->bas_file = -1;
+    d->bas_built = 0;
+    d->sym_force = 1;
+}
+
+static int pick_bas_folder(HWND owner, char *path, DWORD pathsz)
+{
+    BROWSEINFOA bi;
+    PIDLIST_ABSOLUTE pidl;
+    char dir[MAX_PATH] = "";
+
+    memset(&bi, 0, sizeof bi);
+    bi.hwndOwner = owner;
+    bi.lpszTitle = "Import a folder of batari Basic source";
+    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    pidl = SHBrowseForFolderA(&bi);
+    if (!pidl) return 0;
+    if (!SHGetPathFromIDListA(pidl, dir)) dir[0] = '\0';
+    CoTaskMemFree(pidl);
+    snprintf(path, pathsz, "%s", dir);
+    return path[0] != '\0';
+}
+
+/* kind: IDC_BAS_FILE, IDC_BAS_FOLDER or IDC_BAS_MAP */
+static void basic_pick(debugger *d, int kind)
+{
+    char path[MAX_PATH] = "", last_dir[1024], dir[1024];
+    snprintf(last_dir, sizeof last_dir, "%s", a2600session_get_str(d->session, "bas_dir", ""));
+    if (kind == IDC_BAS_FOLDER) {
+        if (!pick_bas_folder(d->hwnd, path, sizeof path)) return;
+        snprintf(dir, sizeof dir, "%s", path);
+    } else {
+        OPENFILENAMEA ofn;
+        char *cut;
+        memset(&ofn, 0, sizeof ofn);
+        ofn.lStructSize = sizeof ofn;
+        ofn.hwndOwner = d->hwnd;
+        ofn.lpstrFilter = kind == IDC_BAS_MAP ? "dasm listings (*.lst)\0*.lst\0All files (*.*)\0*.*\0"
+                                              : "batari Basic source (*.bas)\0*.bas\0All files (*.*)\0*.*\0";
+        ofn.lpstrFile = path;
+        ofn.nMaxFile = sizeof path;
+        ofn.lpstrTitle = kind == IDC_BAS_MAP ? "Load Map" : "Import File";
+        ofn.lpstrInitialDir = last_dir[0] ? last_dir : NULL;
+        ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+        if (!GetOpenFileNameA(&ofn)) return;
+        snprintf(dir, sizeof dir, "%s", path);
+        cut = strrchr(dir, '\\');
+        if (!cut) cut = strrchr(dir, '/');
+        if (cut) *cut = '\0';
+    }
+    if (dir[0]) {   /* the next picker starts where this one ended */
+        a2600session_set_str(d->session, "bas_dir", dir);
+        a2600session_settings_flush(d->session);
+    }
+    if (kind == IDC_BAS_MAP) {
+        const int mapped = a2600srcmap_load_map(a2600srcmap_shared(), path);
+        if (mapped < 0) {
+            SetWindowTextA(d->bas_note, "Could not read that map.");
+        } else {
+            a2600srcmap_import_result res;
+            memset(&res, 0, sizeof res);
+            res.files = a2600srcmap_file_count(a2600srcmap_shared());
+            res.mapped = mapped;
+            snprintf(res.map_path, sizeof res.map_path, "%s", path);
+            basic_note(d, &res);
+            resync(d);
+        }
+    } else {
+        basic_import(d, path, kind == IDC_BAS_FOLDER);
+    }
+}
+
+/* A click on a source line: its breakpoint (lines without code do nothing). */
+static void basic_click(debugger *d, int line)
+{
+    if (d->bas_file < 0 || !a2600srcmap_line_has_code(a2600srcmap_shared(), d->bas_file, line)) return;
+    a2600debug_line_break_toggle(d->dbg, d->bas_file, line);
+    resync(d);
+}
+
+/* While the BASIC tab shows (or its window is the active one) the three
+ * steppers go by BASIC line. */
+static void do_step(debugger *d, int how)
+{
+    const int by_line = d->page == TAB_BASIC || (d->popped[TAB_BASIC] && GetActiveWindow() == d->popped[TAB_BASIC]);
+    switch (how) {
+    case IDC_STEP:
+        if (by_line) a2600debug_step_line(d->dbg); else a2600debug_step(d->dbg);
+        break;
+    case IDC_OVER:
+        if (by_line) a2600debug_step_line_over(d->dbg); else a2600debug_step_over(d->dbg);
+        break;
+    default:
+        if (by_line) a2600debug_step_line_out(d->dbg); else a2600debug_step_out(d->dbg);
+        break;
+    }
+    settle_and_sync(d, 1);
+}
+
 static void tick(debugger *d)
 {
     unsigned gen;
     int stopped;
     if (!IsWindowVisible(d->hwnd)) return;
+    basic_auto(d);
     if (d->notice[0] && !notice_showing(d)) {
         d->notice[0] = '\0';
         refresh_status(d);
@@ -2244,6 +2497,270 @@ static LRESULT CALLBACK disasm_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     return DefWindowProcA(hwnd, msg, wp, lp);
 }
 
+/* ---- the line view (the BASIC source) ---------------------------------------
+ * An EDIT control cannot paint a current-line bar or a breakpoint dot, so the
+ * BASIC page's source is a small window class: it keeps the lines it was given
+ * (text, a flag set, a value handed back on a click), paints the machine's
+ * line as a bar in the accent colour, a breakpoint as a dot in the gutter and
+ * lines without code grey, and scrolls on its own scroll bar. A click posts
+ * WM_DBG_LINE to the debugger window. */
+
+
+typedef struct {
+    int count, cap, first;
+    char **text;
+    unsigned char *flags;
+    int *aux;
+    HFONT font;
+} lineview;
+
+static lineview *lv_of(HWND h)
+{
+    return (lineview *)GetWindowLongPtrA(h, GWLP_USERDATA);
+}
+
+static int lv_row_h(HWND h, lineview *lv)
+{
+    HDC dc = GetDC(h);
+    HGDIOBJ old = SelectObject(dc, lv->font ? lv->font : GetStockObject(DEFAULT_GUI_FONT));
+    TEXTMETRICA tm;
+    int rh = 15;
+    if (GetTextMetricsA(dc, &tm)) rh = tm.tmHeight + 2;
+    SelectObject(dc, old);
+    ReleaseDC(h, dc);
+    return rh;
+}
+
+static int lv_rows(HWND h, lineview *lv)
+{
+    RECT c;
+    int rows;
+    GetClientRect(h, &c);
+    rows = c.bottom / lv_row_h(h, lv);
+    return rows < 1 ? 1 : rows;
+}
+
+static void lv_sync(HWND h, lineview *lv)
+{
+    SCROLLINFO si;
+    const int rows = lv_rows(h, lv);
+    int max_first = lv->count - rows;
+    if (max_first < 0) max_first = 0;
+    if (lv->first > max_first) lv->first = max_first;
+    if (lv->first < 0) lv->first = 0;
+    memset(&si, 0, sizeof si);
+    si.cbSize = sizeof si;
+    si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+    si.nMin = 0;
+    si.nMax = lv->count > 0 ? lv->count - 1 : 0;
+    si.nPage = (UINT)rows;
+    si.nPos = lv->first;
+    SetScrollInfo(h, SB_VERT, &si, TRUE);
+    InvalidateRect(h, NULL, FALSE);
+}
+
+static void lv_begin(HWND h)
+{
+    lineview *lv = lv_of(h);
+    int i;
+    if (!lv) return;
+    for (i = 0; i < lv->count; i++) free(lv->text[i]);
+    lv->count = 0;
+}
+
+static void lv_add(HWND h, const char *text, int flags, int aux)
+{
+    lineview *lv = lv_of(h);
+    char buf[512];
+    size_t o = 0;
+    if (!lv) return;
+    for (; *text && o + 5 < sizeof buf; text++) {   /* tabs -> 4 spaces */
+        if (*text == '\t') {
+            memcpy(buf + o, "    ", 4);
+            o += 4;
+        } else if (*text != '\r' && *text != '\n') {
+            buf[o++] = *text;
+        }
+    }
+    buf[o] = '\0';
+    if (lv->count == lv->cap) {
+        const int ncap = lv->cap ? lv->cap * 2 : 64;
+        char **nt = realloc(lv->text, (size_t)ncap * sizeof *nt);
+        unsigned char *nf = realloc(lv->flags, (size_t)ncap);
+        int *na = realloc(lv->aux, (size_t)ncap * sizeof *na);
+        if (nt) lv->text = nt;
+        if (nf) lv->flags = nf;
+        if (na) lv->aux = na;
+        if (!nt || !nf || !na) return;
+        lv->cap = ncap;
+    }
+    lv->text[lv->count] = _strdup(buf);
+    lv->flags[lv->count] = (unsigned char)flags;
+    lv->aux[lv->count] = aux;
+    lv->count++;
+}
+
+/* reveal: a line to bring into view (centred if it is off screen), or -1 */
+static void lv_end(HWND h, int reveal)
+{
+    lineview *lv = lv_of(h);
+    if (!lv) return;
+    if (reveal >= 0) {
+        const int rows = lv_rows(h, lv);
+        if (reveal < lv->first || reveal >= lv->first + rows - 1) lv->first = reveal - rows / 2;
+    }
+    lv_sync(h, lv);
+}
+
+static void lv_top(HWND h)
+{
+    lineview *lv = lv_of(h);
+    if (lv) lv->first = 0;
+}
+
+static void lv_paint(HWND hwnd, lineview *lv, HDC hdc)
+{
+    RECT c;
+    HGDIOBJ oldfont;
+    TEXTMETRICA tm;
+    HBRUSH red = CreateSolidBrush(RGB(0xe0, 0x1b, 0x24));
+    HPEN redpen = CreatePen(PS_SOLID, 1, RGB(0xe0, 0x1b, 0x24));
+    HPEN greypen = CreatePen(PS_SOLID, 2, RGB(0x9a, 0x99, 0x96));
+    int rh = 15, y = 0, i;
+
+    GetClientRect(hwnd, &c);
+    FillRect(hdc, &c, GetSysColorBrush(COLOR_WINDOW));
+    oldfont = SelectObject(hdc, lv && lv->font ? lv->font : GetStockObject(DEFAULT_GUI_FONT));
+    if (GetTextMetricsA(hdc, &tm)) rh = tm.tmHeight + 2;
+    SetBkMode(hdc, TRANSPARENT);
+    for (i = lv ? lv->first : 0; lv && i < lv->count && y < c.bottom; i++, y += rh) {
+        const int flags = lv->flags[i];
+        const int is_pc = (flags & LVF_PC) != 0;
+        RECT r;
+        SetRect(&r, 0, y, c.right, y + rh);
+        if (is_pc) {
+            FillRect(hdc, &r, a2600_accent_brush());
+            SetTextColor(hdc, A2600_ACCENT_TEXT);
+        } else {
+            SetTextColor(hdc, GetSysColor((flags & LVF_DIM) ? COLOR_GRAYTEXT : COLOR_WINDOWTEXT));
+        }
+        TextOutA(hdc, 22, y + 1, lv->text[i], (int)strlen(lv->text[i]));
+        if (flags & (LVF_BP | LVF_BP_OFF)) {
+            const int on = (flags & LVF_BP) != 0;
+            const int top = y + (rh - 10) / 2;
+            HGDIOBJ ob = SelectObject(hdc, on ? (is_pc ? GetStockObject(WHITE_BRUSH) : red)
+                                              : GetStockObject(NULL_BRUSH));
+            HGDIOBJ op = SelectObject(hdc, on ? (is_pc ? GetStockObject(BLACK_PEN) : redpen) : greypen);
+            Ellipse(hdc, 6, top, 16, top + 10);
+            SelectObject(hdc, ob);
+            SelectObject(hdc, op);
+        }
+    }
+    SelectObject(hdc, oldfont);
+    DeleteObject(red);
+    DeleteObject(redpen);
+    DeleteObject(greypen);
+}
+
+static LRESULT CALLBACK lines_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    lineview *lv = lv_of(hwnd);
+    int i;
+
+    switch (msg) {
+    case WM_NCCREATE:
+        SetWindowLongPtrA(hwnd, GWLP_USERDATA, (LONG_PTR)calloc(1, sizeof(lineview)));
+        break;
+    case WM_NCDESTROY:
+        if (lv) {
+            for (i = 0; i < lv->count; i++) free(lv->text[i]);
+            free(lv->text);
+            free(lv->flags);
+            free(lv->aux);
+            free(lv);
+            SetWindowLongPtrA(hwnd, GWLP_USERDATA, 0);
+        }
+        break;
+    case WM_SETFONT:
+        if (lv) {
+            lv->font = (HFONT)wp;
+            lv_sync(hwnd, lv);
+        }
+        return 0;
+    case WM_GETFONT:
+        return lv ? (LRESULT)lv->font : 0;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_SIZE:
+        if (lv) lv_sync(hwnd, lv);
+        return 0;
+    case WM_VSCROLL:
+        if (lv) {
+            const int rows = lv_rows(hwnd, lv);
+            int pos = lv->first;
+            switch (LOWORD(wp)) {
+            case SB_LINEUP: pos--; break;
+            case SB_LINEDOWN: pos++; break;
+            case SB_PAGEUP: pos -= rows - 1; break;
+            case SB_PAGEDOWN: pos += rows - 1; break;
+            case SB_TOP: pos = 0; break;
+            case SB_BOTTOM: pos = lv->count; break;
+            case SB_THUMBTRACK:
+            case SB_THUMBPOSITION: {
+                SCROLLINFO si;
+                memset(&si, 0, sizeof si);
+                si.cbSize = sizeof si;
+                si.fMask = SIF_TRACKPOS;
+                GetScrollInfo(hwnd, SB_VERT, &si);
+                pos = si.nTrackPos;
+                break;
+            }
+            default: break;
+            }
+            lv->first = pos;
+            lv_sync(hwnd, lv);
+        }
+        return 0;
+    case WM_MOUSEWHEEL:
+        if (lv) {
+            int rows = -GET_WHEEL_DELTA_WPARAM(wp) * 3 / WHEEL_DELTA;
+            if (!rows) rows = GET_WHEEL_DELTA_WPARAM(wp) > 0 ? -1 : 1;
+            lv->first += rows;
+            lv_sync(hwnd, lv);
+        }
+        return 0;
+    case WM_LBUTTONDOWN:
+        SetFocus(hwnd);
+        if (lv && g_dbg) {
+            const int line = lv->first + GET_Y_LPARAM(lp) / lv_row_h(hwnd, lv);
+            if (line >= 0 && line < lv->count)
+                PostMessageA(g_dbg->hwnd, WM_DBG_LINE, (WPARAM)GetDlgCtrlID(hwnd), (LPARAM)lv->aux[line]);
+        }
+        return 0;
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(hwnd, &ps);
+        RECT c;
+        HDC mem;
+        HBITMAP bmp;
+        HGDIOBJ oldbmp;
+        GetClientRect(hwnd, &c);
+        mem = CreateCompatibleDC(dc);
+        bmp = CreateCompatibleBitmap(dc, c.right > 0 ? c.right : 1, c.bottom > 0 ? c.bottom : 1);
+        oldbmp = SelectObject(mem, bmp);
+        lv_paint(hwnd, lv, mem);
+        BitBlt(dc, 0, 0, c.right, c.bottom, mem, 0, 0, SRCCOPY);
+        SelectObject(mem, oldbmp);
+        DeleteObject(bmp);
+        DeleteDC(mem);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    default: break;
+    }
+    return DefWindowProcA(hwnd, msg, wp, lp);
+}
+
 /* ---- edit subclassing ------------------------------------------------------------- */
 
 static WNDPROC g_edit_proc;
@@ -2460,6 +2977,18 @@ static void build_controls(debugger *d)
     d->disasm = CreateWindowExA(WS_EX_CLIENTEDGE, DISASM_CLASS, "", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 10, 10,
                                 d->pg[TAB_DISASM], (HMENU)(INT_PTR)IDC_DISASM, inst, NULL);
 
+    /* BASIC: the imported batari Basic source, a line a row */
+    begin_page(d, TAB_BASIC);
+    d->bas_file_btn = button(d, "Import File...", IDC_BAS_FILE);
+    d->bas_folder_btn = button(d, "Import Folder...", IDC_BAS_FOLDER);
+    d->bas_map_btn = button(d, "Load Map...", IDC_BAS_MAP);
+    d->bas_files = child(d, "COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, IDC_BAS_FILES, d->ui);
+    d->bas_note = dim_label(d, "", SS_LEFT | SS_ENDELLIPSIS);
+    d->bas_view = CreateWindowExA(WS_EX_CLIENTEDGE, LINES_CLASS, "", WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP, 0, 0,
+                                  10, 10, d->pg[TAB_BASIC], (HMENU)(INT_PTR)IDC_BAS_VIEW, inst, NULL);
+    SendMessageA(d->bas_view, WM_SETFONT, (WPARAM)d->mono, TRUE);
+    d->bas_file = -1;
+
     /* Memory: the dump, Go to, Write, and the search bar */
     begin_page(d, TAB_MEMORY);
     d->mem_title = label(d, "Memory (the 6507's 8K bus, $0000-$1FFF, as mapped now)", d->ui_bold, SS_LEFT);
@@ -2611,7 +3140,7 @@ static void build_controls(debugger *d)
 
 /* Help's contexts (data/help/help.md), one per tab */
 static const char *const k_tab_contexts[TAB_COUNT] = {
-    "debugger/console", "debugger/disassembly", "debugger/memory", "debugger/breakpoints", "debugger/watches",
+    "debugger/console", "debugger/disassembly", "debugger/basic", "debugger/memory", "debugger/breakpoints", "debugger/watches",
     "debugger/cart", "debugger/trace", "debugger/history", "debugger/video", "debugger/sound",
     "debugger/symbols", "debugger/fujinet",
 };
@@ -2673,6 +3202,24 @@ static void layout_page(debugger *d, int page, int pw, int ph)
         place(d->disasm_hint, x, py + (eh - lh) / 2, px + pw - x, lh);
         place(d->disasm, px, py + eh + S(d, 6), pw, ph - eh - S(d, 6));
         break;
+
+    case TAB_BASIC: {
+        /* the buttons and the file chooser, the note, then the source */
+        x = px;
+        w = btn_w(d, "Import File...");
+        place(d->bas_file_btn, x, py, w, bh);
+        x += w + gap;
+        w = btn_w(d, "Import Folder...");
+        place(d->bas_folder_btn, x, py, w, bh);
+        x += w + gap;
+        w = btn_w(d, "Load Map...");
+        place(d->bas_map_btn, x, py, w, bh);
+        x += w + S(d, 12);
+        place(d->bas_files, x, py + (bh - eh) / 2, S(d, 260), S(d, 240));
+        place(d->bas_note, px, py + bh + gap, pw, lh);
+        place(d->bas_view, px, py + bh + gap + lh + gap, pw, ph - bh - lh - 2 * gap);
+        break;
+    }
 
     case TAB_MEMORY: {
         /* the dump, then Go to / paging / Write, then the search bar */
@@ -3260,6 +3807,9 @@ static LRESULT CALLBACK dbg_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_DBG_SYNC:
         resync(d);
         return 0;
+    case WM_DBG_LINE:
+        if (wp == IDC_BAS_VIEW) basic_click(d, (int)lp);
+        return 0;
     case WM_NOTIFY:
         return on_notify(d, (NMHDR *)lp);
     case WM_DRAWITEM:
@@ -3300,6 +3850,8 @@ static LRESULT CALLBACK dbg_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         RECT r;
         GetWindowRect(d->disasm, &r);
         if (page_visible(d, TAB_DISASM) && PtInRect(&r, p)) return SendMessageA(d->disasm, msg, wp, lp);
+        GetWindowRect(d->bas_view, &r);
+        if (page_visible(d, TAB_BASIC) && PtInRect(&r, p)) return SendMessageA(d->bas_view, msg, wp, lp);
         GetWindowRect(d->mem_view, &r);
         if (page_visible(d, TAB_MEMORY) && PtInRect(&r, p)) return SendMessageA(d->mem_view, msg, wp, lp);
         break;
@@ -3336,13 +3888,28 @@ static LRESULT CALLBACK dbg_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         switch (id) {
         case IDC_RUN: on_run(d); return 0;
-        case IDC_STEP: a2600debug_step(d->dbg); settle_and_sync(d, 1); return 0;
-        case IDC_OVER: a2600debug_step_over(d->dbg); settle_and_sync(d, 1); return 0;
-        case IDC_OUT: a2600debug_step_out(d->dbg); settle_and_sync(d, 1); return 0;
+        case IDC_STEP:
+        case IDC_OVER:
+        case IDC_OUT: do_step(d, id); return 0;
         case IDC_SCAN: a2600debug_scanline(d->dbg, 1); settle_and_sync(d, 1); return 0;
         case IDC_FRAME: a2600debug_frame(d->dbg, 1); settle_and_sync(d, 1); return 0;
         case IDC_REWIND: a2600debug_rewind(d->dbg, 1); settle_and_sync(d, 1); return 0;
         case IDC_UNWIND: a2600debug_unwind(d->dbg, 1); settle_and_sync(d, 1); return 0;
+        case IDC_BAS_FILE:
+        case IDC_BAS_FOLDER:
+        case IDC_BAS_MAP: basic_pick(d, id); return 0;
+        case IDC_BAS_FILES:
+            if (HIWORD(wp) == CBN_SELCHANGE) {
+                const int sel = (int)SendMessageA(d->bas_files, CB_GETCURSEL, 0, 0);
+                if (sel >= 0) {
+                    d->bas_file = sel;
+                    d->bas_pc_line = 0;
+                    d->bas_built = 0;
+                    lv_top(d->bas_view);
+                    refresh_basic(d);
+                }
+            }
+            return 0;
         case IDC_BANK:
             if (HIWORD(wp) == CBN_SELCHANGE) {
                 d->disasm_bank = (int)SendMessageA(d->bank, CB_GETCURSEL, 0, 0) - 1;
@@ -3500,6 +4067,25 @@ static void env_hooks(debugger *d)
         SetWindowTextA(d->mem_goto, v);
         on_mem_goto(d);
     }
+    if ((v = getenv("A2600_BASIC_IMPORT")) != NULL && *v) basic_import(d, v, 0);
+    if ((v = getenv("A2600_BASIC_BREAK")) != NULL && strchr(v, ':')) {
+        /* name.bas:line -- the file by the end of its name */
+        a2600srcmap *map = a2600srcmap_shared();
+        const char *colon = strrchr(v, ':');
+        const size_t nlen = (size_t)(colon - v);
+        const int line = atoi(colon + 1);
+        int file;
+        for (file = 0; file < a2600srcmap_file_count(map); file++) {
+            const char *name = a2600srcmap_file_name(map, file);
+            const size_t len = name ? strlen(name) : 0;
+            if (len >= nlen && nlen > 0 && _strnicmp(name + len - nlen, v, nlen) == 0 &&
+                a2600srcmap_line_has_code(map, file, line) &&
+                a2600debug_line_break_state(d->dbg, file, line) == 0) {
+                a2600debug_line_break_toggle(d->dbg, file, line);
+                break;
+            }
+        }
+    }
     if ((v = getenv("A2600_DEBUGGER_HISTORY")) != NULL && *v && *v != '0') a2600debug_trace_enable(d->dbg, 1);
     if ((tab = tab_from_env_var("A2600_DEBUGGER_POPOUT")) >= 0) pop_out(d, tab);
     resync(d);
@@ -3512,6 +4098,7 @@ static void load_cart_symbols(debugger *d)
     char msg[512];
     msg[0] = '\0';
     if (a2600debug_load_symbols(d->dbg, msg, sizeof msg) > 0 && msg[0]) console_output(d, msg);
+    basic_auto(d);
 }
 
 void a2600_debugger_show(HWND parent, a2600session *session)
@@ -3544,6 +4131,7 @@ void a2600_debugger_show(HWND parent, a2600session *session)
         register_class(inst, DBG_CLASS, dbg_proc, (HBRUSH)(COLOR_BTNFACE + 1), CS_HREDRAW | CS_VREDRAW);
         register_class(inst, DISASM_CLASS, disasm_proc, NULL, CS_DBLCLKS);
         register_class(inst, MEMVIEW_CLASS, memview_proc, NULL, 0);
+        register_class(inst, LINES_CLASS, lines_proc, NULL, 0);
         register_class(inst, PAGE_CLASS, page_proc, (HBRUSH)(COLOR_BTNFACE + 1), 0);
         register_class(inst, POP_CLASS, pop_proc, (HBRUSH)(COLOR_BTNFACE + 1), CS_HREDRAW | CS_VREDRAW);
         registered = 1;

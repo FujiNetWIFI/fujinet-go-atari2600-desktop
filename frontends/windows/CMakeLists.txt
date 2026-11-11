@@ -35,7 +35,7 @@ target_link_libraries(fujinet-go-atari2600-windows PRIVATE
   # dialogs. shell32: DragQueryFile and ShellExecute for the web UI.
   # comctl32: the debugger's tab control and the settings trackbar (and the
   # v6 manifest above is what makes them look like this decade).
-  d3d11 dxgi dwmapi comdlg32 shell32 comctl32)
+  d3d11 dxgi dwmapi comdlg32 shell32 ole32 comctl32)
 target_compile_options(fujinet-go-atari2600-windows PRIVATE -Wall -Wextra)
 
 # Bundle the MinGW runtime statically so the .exe has no loose DLL deps.
