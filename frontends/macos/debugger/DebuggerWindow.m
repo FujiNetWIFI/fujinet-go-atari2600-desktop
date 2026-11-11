@@ -1,8 +1,52 @@
 /*
- * Debugger window (AppKit) over Stella's own debugger engine, via
- * core/include/a2600debug.h. Mirrors the GTK, Qt and Win32 debuggers tab
- * for tab: Prompt, CPU & RAM, Disassembly, TIA, I/O, Breaks & Traps,
- * States & Cart, FujiNet.
+ * Debugger window (AppKit) over Stella's own debugger engine (its 112-command
+ * prompt, CpuDebug, RiotDebug, TIADebug, CartDebug and DiStella), via
+ * core/include/a2600debug.h and a2600memtools.h. Mirrors the family's other
+ * debuggers (the SMS, Atari 7800, Astrocade, Apple II and Intellivision macOS
+ * ones, and the GTK, Qt and Win32 windows), tab for tab: Console,
+ * Disassembly, Memory, Breakpoints, Watches, Cart & I/O, Trace, History,
+ * Video, Sound, Symbols, FujiNet. The 6502 registers sit in an editable strip
+ * under the tabs; any tab can be popped out into a window of its own (Pop
+ * Out / Dock).
+ *
+ * Opening the window stops the machine (a2600debug_stop), as the other
+ * frontends do; Run resumes it.
+ *
+ * A 100 ms NSTimer polls a2600debug_generation() and refreshes only the tab on
+ * show, and only when the generation changed (a stop, a resume, a step, a
+ * command, an edit). While the machine runs, that tab's live values refresh
+ * twice a second (every fifth tick). After a step the window waits a moment
+ * (~40 ms) for the stop to settle before it reads anything back; a longer run
+ * (Frame, Step Out) is picked up by the poll when it stops. A new
+ * a2600debug_stop_serial() (not a mere refresh) puts the Disassembly back on
+ * the PC and the Memory tab on it too, and the status line says why it stopped.
+ *
+ * Keys work anywhere in the window (a local key monitor, so the console's
+ * field takes them too): F5 stop/run, F7 step, F8 step over, Shift+F8 step
+ * out.
+ *
+ * A2600_DEBUGGER_TAB picks the tab shown first: an index (0 Console,
+ * 1 Disassembly, 2 Memory, 3 Breakpoints, 4 Watches, 5 Cart & I/O, 6 Trace,
+ * 7 History, 8 Video, 9 Sound, 10 Symbols, 11 FujiNet) or the start of a tab's
+ * name ("cart", "prompt" for the console, "tia" for Video, "io" for
+ * Cart & I/O). For captures: A2600_DEBUGGER_WATCH (a comma list),
+ * A2600_DEBUGGER_WATCH_BREAK, A2600_DEBUGGER_MEM_GOTO, A2600_DEBUGGER_HISTORY=1
+ * and A2600_DEBUGGER_POPOUT=<tab>; A2600_DEBUGGER_VIDEO_* are the Video tab's.
+ *
+ * Highlights: the PC's line is the 2600 accent orange (#FFA645) with the dark
+ * accent ink on it, an enabled breakpoint's marker red and a disabled one's
+ * hollow grey, labels grey; the Run button is the accent while stopped.
+ *
+ * The Video tab (VideoTab.m, over a2600vidtab.h) shows the picture in four
+ * views with overlays, hover/pin inspection, the registers, the colours, the
+ * per-row records, the TIA writes and the timing; the TIA's register/strobe
+ * set sits under the registers. Its page is a stack constrained to the page's
+ * height, so it never draws over a neighbour. The FujiNet tab shows every
+ * FujiBus packet between the console and FujiNet, both ways, with hex, beside
+ * the cartridge's link state (a2600debug_fujinet_*).
+ *
+ * NOT COMPILED OR RUN HERE (no Cocoa SDK on the Linux dev box): ported from
+ * the Atari 7800 macOS debugger by reading; checked on the macOS CI runner.
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -12,76 +56,145 @@
 
 #import "../KeyForward.h"
 #import "../help/HelpWindow.h"
+#import "VideoTab.h"
 
+#include <float.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <unistd.h>
 
 #include "a2600debug.h"
+#include "a2600memtools.h"
 
 #define DISASM_WINDOW 48
-#define TRACE_MAX 512
+#define MAX_BPS 64
+#define NUM_REGS 6
+#define NUM_FLAGS 7
+#define MEM_ROWS 40            /* the hex dump: 16 bytes a row */
+#define MEM_BYTES (MEM_ROWS * 16)
+#define BUS_TOP 0x2000        /* the 6507's 13-bit bus: $0000-$1FFF */
+#define MAX_REGIONS 64
+#define FUJI_PACKETS_MAX 512   /* FujiNet packets shown */
+#define TAB_CONSOLE 0          /* the tabs, in order */
+#define TAB_DISASM 1
+#define TAB_MEMORY 2
+#define TAB_BREAKS 3
+#define TAB_WATCHES 4
+#define TAB_CART 5
+#define TAB_TRACE 6
+#define TAB_HIST 7
+#define TAB_VIDEO 8
+#define TAB_SOUND 9
+#define TAB_SYMBOLS 10
+#define TAB_FUJINET 11
+#define NUM_TABS 12
+#define HIST_RING 65536        /* the engine's trace ring */
+#define HIST_SHOWN 2000        /* the newest matching lines a tab shows */
+#define TRACE_TICKS 4          /* 4 x 100 ms: the Trace tab's live refresh */
+#define LIVE_TICKS 5           /* 5 x 100 ms: the live refresh while running */
 
 static A2600DebuggerWindow *g_debugger;
 
-/* Disassembly text view: a click toggles the breakpoint on the clicked
- * line; the wheel browses. */
+/* The ink on an accent fill: A2600SESSION_ACCENT_DARK_RGB. */
+static NSColor *accentInk(void)
+{
+    return [NSColor colorWithSRGBRed:((A2600SESSION_ACCENT_DARK_RGB >> 16) & 0xFF) / 255.0
+                               green:((A2600SESSION_ACCENT_DARK_RGB >> 8) & 0xFF) / 255.0
+                                blue:(A2600SESSION_ACCENT_DARK_RGB & 0xFF) / 255.0
+                               alpha:1.0];
+}
+
+/* Toggled-on look for a push button: accent bezel and a dark-ink title. Off
+ * restores the plain bezel and title. Call again after setting a new title
+ * on a button that is on (a plain title drops the attributed one). */
+static void setButtonAccent(NSButton *button, BOOL on)
+{
+    if (!button) return;
+    NSString *title = [button.title copy];
+    if (on) {
+        NSMutableParagraphStyle *para = [[NSMutableParagraphStyle alloc] init];
+        para.alignment = NSTextAlignmentCenter;
+        button.bezelColor = A2600AccentColor();
+        button.attributedTitle = [[NSAttributedString alloc]
+            initWithString:title
+                attributes:@{
+                    NSFontAttributeName: button.font ?: [NSFont systemFontOfSize:[NSFont systemFontSize]],
+                    NSForegroundColorAttributeName: accentInk(),
+                    NSParagraphStyleAttributeName: para
+                }];
+    } else {
+        button.bezelColor = nil;
+        button.title = title;       /* drops the attributed title */
+    }
+}
+
+/* An enabled breakpoint's marker: the same red in every toolkit's debugger. */
+static NSColor *breakpointRed(void)
+{
+    return [NSColor colorWithSRGBRed:0xE0 / 255.0 green:0x1B / 255.0 blue:0x24 / 255.0 alpha:1.0];
+}
+
+/* A monospace text view for rows: a click reports its line, column and click
+ * count; the wheel browses by row. The disassembly and the memory dump. */
 @interface DasmTextView : NSTextView
-@property (nonatomic, copy) void (^onToggleLine)(int line);
-@property (nonatomic, copy) void (^onScroll)(int lines);
+@property (nonatomic, copy) void (^onClick)(int line, int column, NSInteger clicks);
+@property (nonatomic, copy) void (^onScroll)(int rows);
 @end
 
-@implementation DasmTextView
+@implementation DasmTextView {
+    CGFloat _wheel;     /* the wheel's fraction not yet scrolled */
+}
+
 - (void)mouseDown:(NSEvent *)event
 {
-    NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    NSUInteger idx = [self characterIndexForInsertionAtPoint:p];
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    NSUInteger index = [self characterIndexForInsertionAtPoint:point];
     NSString *text = self.string;
-    if (idx > text.length) idx = text.length;
+    if (index > text.length) index = text.length;
     int line = 0;
-    for (NSUInteger i = 0; i < idx && i < text.length; i++)
-        if ([text characterAtIndex:i] == '\n') line++;
-    if (self.onToggleLine) self.onToggleLine(line);
+    NSUInteger lineStart = 0;
+    for (NSUInteger i = 0; i < index; i++)
+        if ([text characterAtIndex:i] == '\n') { line++; lineStart = i + 1; }
+    if (self.onClick) self.onClick(line, (int)(index - lineStart), event.clickCount);
 }
 
 - (void)scrollWheel:(NSEvent *)event
 {
-    if (self.onScroll) self.onScroll((int)(-event.scrollingDeltaY / 6.0));
+    /* a notch is a few rows; a trackpad's pixels are many */
+    _wheel += event.hasPreciseScrollingDeltas ? -event.scrollingDeltaY / 8.0 : -event.scrollingDeltaY * 3.0;
+    const int rows = (int)_wheel;
+    if (rows == 0) return;
+    _wheel -= rows;
+    if (self.onScroll) self.onScroll(rows);
 }
 @end
 
-/* The TIA picture: nearest-neighbour, 4:3, letterboxed. */
-@interface TiaPictureView : NSView
-@property (nonatomic) CGImageRef image;
+/* The Symbols list: a click reports the clicked line (the wheel scrolls it
+ * as any text view does). */
+@interface SymbolTextView : NSTextView
+@property (nonatomic, copy) void (^onClickLine)(int line);
 @end
 
-@implementation TiaPictureView
-- (void)setImage:(CGImageRef)image
+@implementation SymbolTextView
+- (void)mouseDown:(NSEvent *)event
 {
-    if (_image) CGImageRelease(_image);
-    _image = image;
-    [self setNeedsDisplay:YES];
-}
-- (void)dealloc { if (_image) CGImageRelease(_image); }
-- (void)drawRect:(NSRect)dirty
-{
-    (void)dirty;
-    CGContextRef dc = [[NSGraphicsContext currentContext] CGContext];
-    const NSRect b = [self bounds];
-    CGContextSetRGBFillColor(dc, 0, 0, 0, 1);
-    CGContextFillRect(dc, b);
-    if (!_image) return;
-    const double want = 4.0 / 3.0;
-    double w = b.size.width, h = b.size.height, sw, sh;
-    if (w / h > want) { sh = h; sw = sh * want; } else { sw = w; sh = sw / want; }
-    CGContextSetInterpolationQuality(dc, kCGInterpolationNone);
-    CGContextDrawImage(dc, CGRectMake((w - sw) / 2, (h - sh) / 2, sw, sh), _image);
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    NSUInteger index = [self characterIndexForInsertionAtPoint:point];
+    NSString *text = self.string;
+    if (index > text.length) index = text.length;
+    int line = 0;
+    for (NSUInteger i = 0; i < index; i++)
+        if ([text characterAtIndex:i] == '\n') line++;
+    if (self.onClickLine) self.onClickLine(line);
 }
 @end
 
 @interface A2600DebuggerWindow () <NSTabViewDelegate>
 - (instancetype)initWithSession:(a2600session *)session;
-- (void)refreshAll;
+- (void)show;
+- (void)refreshNow;
 @end
 
 @implementation A2600DebuggerWindow {
@@ -89,71 +202,142 @@ static A2600DebuggerWindow *g_debugger;
     a2600debug *_dbg;
     NSWindow *_window;
     NSTimer *_tick;
+    id _keyMonitor;
     unsigned _seenGen;
     BOOL _wasStopped;
-    int _runningTicks;
+    int _liveTicks;
     NSTabView *_tabs;
 
     NSButton *_runBtn;
     NSTextField *_status;
+    NSTextField *_breakAt;
 
-    NSTextView *_promptOut;
-    NSTextField *_promptIn;
+    NSTextView *_conOut;
+    NSTextField *_conIn;
+    NSMutableArray<NSString *> *_history;
+    NSInteger _historyPos;
 
-    NSTextField *_reg[6];
-    NSButton *_flag[7];
-    NSTextField *_cycles;
-    NSTextView *_ram;
-    NSTextField *_ramAddr, *_ramVal;
+    NSTextField *_reg[NUM_REGS];
+    NSButton *_flag[NUM_FLAGS];
+    NSTextField *_beam;
+    DasmTextView *_mem;
+    NSTextField *_memGoto, *_memWrite;
+    int _memBase;               /* the dump's first address */
+    BOOL _memHl;                /* a range is highlighted: Go to, a hit, a watch */
+    int _memHlLo, _memHlHi;
+    BOOL _holdMemOnce;          /* A2600_DEBUGGER_MEM_GOTO: the first stop leaves the dump alone */
+    NSPopUpButton *_srchKind;
+    NSTextField *_srchEntry, *_srchNote;
 
-    NSPopUpButton *_bank;
+    uint64_t _seenStop;         /* a2600debug_stop_serial() last acted on */
+    BOOL _scrolledAway;         /* the wheel moved the disassembly off the PC */
+    int _traceTicks;
+
+    NSStackView *_wtList;
+    NSString *_wtSig;
+    NSTextField *_wtEntry;
+
+    NSTextView *_cartText;
+    NSTextField *_tiaReg, *_tiaVal;
+    NSTextView *_soundText;
+    NSButton *_hRec[2];         /* Trace (0) and History (1) share one ring */
+    NSPopUpButton *_hFilter[2];
+    NSTextField *_hRange[2], *_hNote[2];
+    NSTextView *_hText[2];
+
+    NSTextField *_symFilter, *_symCount, *_symName, *_symAddr;
+    SymbolTextView *_symList;
+    NSMutableArray<NSNumber *> *_symAddrs;      /* the address of each line shown */
+
+    NSTabViewItem *_items[NUM_TABS];    /* each tab's item, in order */
+    NSWindow *_popped[NUM_TABS];        /* its own window while popped out */
+
+    NSPopUpButton *_bank;           /* the Disassembly's bank chooser: "PC's bank", Bank 0 ... */
     NSButton *_followPc;
     NSTextField *_jump;
     DasmTextView *_disasm;
-    int _disasmFirst;
-    int _disasmBank;
+    int _disasmFirst;               /* the first line shown, in the bank's listing */
+    int _disasmBank;                /* a bank, or -1 for the PC's */
     uint16_t _lineAddr[DISASM_WINDOW];
     int _lineCount;
 
-    NSTextView *_tiaText;
-    NSTextField *_tiaReg, *_tiaVal;
-    TiaPictureView *_tiaPic;
-    NSButton *_tiaPartial;
-    uint32_t *_tiaPx;
+    A2600VideoTab *_video;            /* the Video tab (VideoTab.m) */
+    BOOL _videoShown;               /* it was on show at the last refresh */
 
-    NSTextView *_riot;
+    NSPopUpButton *_bpType, *_bpBank;
+    NSTextField *_bpStart, *_bpEnd, *_bpCond, *_bpErr, *_bpStop;
+    NSStackView *_bpList;
+    NSString *_bpSig;
 
-    NSTextField *_bpEntry;
-    NSTextView *_bps;
-
-    NSTextField *_cartInfo;
-
-    NSInteger _fujiPage;
     NSTextField *_fujiNote;
     NSTextView *_fujiText, *_fujiState;
     uint64_t _fujiLast;
-    int _fujiCount;
+    int _fujiCount;             /* what the log shows: -1 forces a rebuild */
 }
 
-static const char *const kFileKinds[5] = { "dis", "rom", "access", "ses", "snap" };
-static NSString *const kFileTitles[5] = { @"Disassembly…", @"ROM (patched)…", @"Access counters…", @"Session…", @"TIA snapshot…" };
+#define NUM_FILE_KINDS 5
+static const char *const kFileKinds[NUM_FILE_KINDS] = { "dis", "rom", "access", "ses", "snap" };
+static NSString *const kFileTitles[NUM_FILE_KINDS] = {
+    @"Disassembly…", @"ROM (patched)…", @"Access counters…", @"Session…", @"TIA snapshot…"
+};
+
+/* A2600_DEBUGGER_TAB takes an index or the start of one of these. */
+static const char *const kTabNames[NUM_TABS] = {
+    "console", "disassembly", "memory", "breakpoints", "watches", "cart", "trace", "history", "video", "sound",
+    "symbols", "fujinet"
+};
+static NSString *const kTabTitles[NUM_TABS] = {
+    @"Console", @"Disassembly", @"Memory", @"Breakpoints", @"Watches", @"Cart & I/O", @"Trace", @"History",
+    @"Video", @"Sound", @"Symbols", @"FujiNet"
+};
+/* Help's contexts (a2600help.h), one per tab */
+static NSString *const kHelpTabs[NUM_TABS] = {
+    @"console", @"disassembly", @"memory", @"breakpoints", @"watches", @"cart", @"trace", @"history", @"video",
+    @"sound", @"symbols", @"fujinet"
+};
+
+/* A tab by index or by the start of its name; -1 for none. */
+static int tabFromText(const char *tab)
+{
+    if (!tab || !*tab) return -1;
+    if (tab[0] >= '0' && tab[0] <= '9') return atoi(tab);
+    if (!strncasecmp(tab, "prompt", strlen(tab)) && strlen(tab) > 1) return TAB_CONSOLE;
+    if (!strncasecmp(tab, "tia", strlen(tab)) && strlen(tab) > 1) return TAB_VIDEO;
+    if (!strncasecmp(tab, "io", 2) || !strncasecmp(tab, "i/o", 3)) return TAB_CART;
+    for (int i = 0; i < NUM_TABS; i++)
+        if (!strncasecmp(tab, kTabNames[i], strlen(tab))) return i;
+    return -1;
+}
 
 /* ---- helpers --------------------------------------------------------------- */
 
-static NSString *stripControl(const char *s)
+/* The engine's text as a string: control bytes dropped (a console's CRs and
+ * escapes), UTF-8 if it is, otherwise Latin-1. */
+static NSString *cstr(const char *text)
 {
-    NSMutableString *out = [NSMutableString string];
-    char buf[2] = { 0, 0 };
-    for (; *s; s++) {
-        if ((unsigned char)*s >= 0x20 || *s == '\n' || *s == '\t') {
-            buf[0] = *s;
-            [out appendString:[NSString stringWithUTF8String:buf] ?: @""];
-        }
+    if (!text) return @"";
+    const size_t length = strlen(text);
+    char *copy = malloc(length + 1);
+    if (!copy) return @"";
+    size_t used = 0;
+    for (size_t i = 0; i < length; i++) {
+        const unsigned char c = (unsigned char)text[i];
+        if (c >= 0x20 || c == '\n' || c == '\t') copy[used++] = (char)c;
     }
-    return out;
+    copy[used] = '\0';
+    NSString *result = [NSString stringWithUTF8String:copy];
+    if (!result) result = [[NSString alloc] initWithBytes:copy length:used encoding:NSISOLatin1StringEncoding];
+    free(copy);
+    return result ?: @"";
 }
 
-/* $hex, 0xhex, #dec, or bare hex, as Stella's prompt reads numbers. */
+/* Pads a column to width (never cuts a longer one). */
+static NSString *padTo(NSString *text, NSUInteger width)
+{
+    return text.length >= width ? text : [text stringByPaddingToLength:width withString:@" " startingAtIndex:0];
+}
+
+/* $hex, 0xhex, hexh, #dec, or bare hex. */
 static BOOL parseNum(NSString *text, long *out)
 {
     NSString *t = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
@@ -161,20 +345,64 @@ static BOOL parseNum(NSString *text, long *out)
     if ([t hasPrefix:@"$"]) t = [t substringFromIndex:1];
     else if ([t.lowercaseString hasPrefix:@"0x"]) t = [t substringFromIndex:2];
     else if ([t hasPrefix:@"#"]) { t = [t substringFromIndex:1]; base = 10; }
+    else if (t.length > 1 && [t.lowercaseString hasSuffix:@"h"]) t = [t substringToIndex:t.length - 1];
     if (t.length == 0) return NO;
     char *end;
-    long v = strtol(t.UTF8String, &end, base);
+    long value = strtol(t.UTF8String, &end, base);
     if (*end) return NO;
-    *out = v;
+    *out = value;
     return YES;
 }
 
-- (int)resolveAddr:(NSString *)text
+/* A value as the fields take it: a label, or $hex, 0xhex, hexh, #dec or bare
+ * hex digits. On failure the reason is in *why. */
+- (BOOL)evaluate:(NSString *)text into:(long *)out why:(NSString **)why
 {
-    long v;
-    int addr = a2600debug_label_address(_dbg, text.UTF8String);
-    if (addr < 0 && parseNum(text, &v) && v >= 0 && v <= 0xffff) addr = (int)v;
-    return addr;
+    NSString *t = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    long value;
+    if (t.length == 0) {
+        if (why) *why = @"nothing entered";
+        return NO;
+    }
+    const int label = a2600debug_label_address(_dbg, t.UTF8String);
+    if (label >= 0) {
+        *out = label;
+        return YES;
+    }
+    if (parseNum(t, &value)) {
+        *out = value;
+        return YES;
+    }
+    if (why) *why = @"not a number or label";
+    return NO;
+}
+
+/* An address: the above, within $0000-$FFFF. -1 when it is not one. */
+- (int)resolveAddr:(NSString *)text why:(NSString **)why
+{
+    long value;
+    if (![self evaluate:text into:&value why:why]) return -1;
+    if (value < 0 || value > 0xFFFF) {
+        if (why) *why = @"out of range ($0000-$FFFF)";
+        return -1;
+    }
+    return (int)value;
+}
+
+static NSFont *monoFont(void)
+{
+    return [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
+}
+
+static NSDictionary *monoAttrs(void)
+{
+    return @{ NSFontAttributeName: monoFont(), NSForegroundColorAttributeName: NSColor.textColor };
+}
+
+/* The accent fill with the dark ink on it: the PC's line, a marked row. */
+static NSDictionary *accentAttrs(void)
+{
+    return @{ NSBackgroundColorAttributeName: A2600AccentColor(), NSForegroundColorAttributeName: accentInk() };
 }
 
 static NSTextView *monoView(NSScrollView **scrollOut, BOOL wrap)
@@ -185,7 +413,7 @@ static NSTextView *monoView(NSScrollView **scrollOut, BOOL wrap)
     NSTextView *view = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 400, 300)];
     view.editable = NO;
     view.richText = NO;
-    view.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
+    view.font = monoFont();
     if (wrap) {
         view.autoresizingMask = NSViewWidthSizable;
     } else {
@@ -197,6 +425,35 @@ static NSTextView *monoView(NSScrollView **scrollOut, BOOL wrap)
     scroll.documentView = view;
     *scrollOut = scroll;
     return view;
+}
+
+/* A monospace row view in a scroll view with no vertical bar: the wheel and
+ * the clicks are the view's own (the disassembly, the memory dump). */
+static DasmTextView *rowView(NSScrollView **scrollOut)
+{
+    NSScrollView *scroll = [[NSScrollView alloc] init];
+    scroll.hasVerticalScroller = NO;
+    scroll.hasHorizontalScroller = YES;
+    DasmTextView *view = [[DasmTextView alloc] initWithFrame:NSMakeRect(0, 0, 600, 600)];
+    view.editable = NO;
+    view.richText = NO;
+    view.selectable = NO;
+    view.font = monoFont();
+    view.horizontallyResizable = YES;
+    view.textContainer.widthTracksTextView = NO;
+    view.textContainer.containerSize = NSMakeSize(FLT_MAX, FLT_MAX);
+    view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    scroll.documentView = view;
+    *scrollOut = scroll;
+    return view;
+}
+
+/* Whether a view's reader is at its end (a log then follows new lines). */
+static BOOL atEnd(NSTextView *view)
+{
+    NSScrollView *scroll = view.enclosingScrollView;
+    if (!scroll) return YES;
+    return NSMaxY(scroll.contentView.documentVisibleRect) >= NSHeight(view.frame) - 4;
 }
 
 /* Replaces a view's text where the reader left it (a refresh must not throw
@@ -215,12 +472,16 @@ static void setText(NSTextView *view, NSString *text, BOOL follow)
     if (follow) [view scrollRangeToVisible:NSMakeRange(view.string.length, 0)];
 }
 
-/* Whether a view's reader is at its end (a log then follows new lines). */
-static BOOL atEnd(NSTextView *view)
+/* The same for styled text, always where the reader left it. */
+static void setStyledText(NSTextView *view, NSAttributedString *text)
 {
     NSScrollView *scroll = view.enclosingScrollView;
-    if (!scroll) return YES;
-    return NSMaxY(scroll.contentView.documentVisibleRect) >= NSHeight(view.frame) - 4;
+    const NSPoint at = scroll ? scroll.contentView.bounds.origin : NSZeroPoint;
+    [view.textStorage setAttributedString:text];
+    if (scroll) {
+        [scroll.contentView scrollToPoint:at];
+        [scroll reflectScrolledClipView:scroll.contentView];
+    }
 }
 
 - (NSButton *)button:(NSString *)title action:(SEL)sel
@@ -235,11 +496,22 @@ static BOOL atEnd(NSTextView *view)
     return [NSTextField labelWithString:text];
 }
 
+- (NSTextField *)hint:(NSString *)text
+{
+    NSTextField *l = [self label:text];
+    l.textColor = NSColor.secondaryLabelColor;
+    /* a long hint gives way to a narrow window instead of widening it */
+    l.lineBreakMode = NSLineBreakByTruncatingTail;
+    [l setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                forOrientation:NSLayoutConstraintOrientationHorizontal];
+    return l;
+}
+
 - (NSTextField *)field:(NSString *)placeholder width:(CGFloat)width action:(SEL)sel
 {
     NSTextField *f = [[NSTextField alloc] init];
     f.placeholderString = placeholder;
-    f.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
+    f.font = monoFont();
     f.target = self;
     f.action = sel;
     if (width > 0) [f.widthAnchor constraintEqualToConstant:width].active = YES;
@@ -273,9 +545,21 @@ static void fill(NSStackView *stack, NSView *view)
 + (void)showForSession:(a2600session *)session
 {
     if (!g_debugger) g_debugger = [[A2600DebuggerWindow alloc] initWithSession:session];
-    [g_debugger->_window makeKeyAndOrderFront:nil];
-    a2600debug_stop(g_debugger->_dbg);
-    [g_debugger refreshAll];
+    [g_debugger show];
+}
+
+- (void)show
+{
+    if (_window.isMiniaturized) [_window deminiaturize:nil];
+    [_window makeKeyAndOrderFront:nil];
+    for (int t = 0; t < NUM_TABS; t++)
+        if (_popped[t]) [_popped[t] orderFront:nil];
+    /* opening the debugger stops the machine, as in the other frontends */
+    const unsigned gen = a2600debug_generation(_dbg);
+    a2600debug_stop(_dbg);
+    [self settleFrom:gen];
+    [self refreshNow];
+    if ([self currentTab] == TAB_CONSOLE) [_window makeFirstResponder:_conIn];
 }
 
 - (instancetype)initWithSession:(a2600session *)session
@@ -284,14 +568,56 @@ static void fill(NSStackView *stack, NSView *view)
     if (!self) return nil;
     _session = session;
     _dbg = a2600session_debugger(session);
-    _disasmBank = -1;
     _fujiCount = -1;
-    _tiaPx = calloc((size_t)A2600SESSION_FB_WIDTH * A2600SESSION_FB_MAX_HEIGHT, sizeof *_tiaPx);
+    _memBase = 0x80 - 2 * 16;       /* the RIOT RAM, a couple of rows down */
+    _disasmBank = -1;
+    _symAddrs = [NSMutableArray array];
+    _history = [NSMutableArray array];
     [self buildWindow];
+
+    /* For captures and tests, like A2600_DEBUGGER_TAB */
+    {
+        const char *watch = getenv("A2600_DEBUGGER_WATCH");
+        const char *watchBreak = getenv("A2600_DEBUGGER_WATCH_BREAK");
+        const char *gotoText = getenv("A2600_DEBUGGER_MEM_GOTO");
+        const char *history = getenv("A2600_DEBUGGER_HISTORY");
+        const char *popOut = getenv("A2600_DEBUGGER_POPOUT");
+        uint16_t lo, hi;
+        if (watch && *watch) {
+            for (NSString *item in [cstr(watch) componentsSeparatedByString:@","]) {
+                NSString *text = [item stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+                if (text.length) a2600watch_add(text.UTF8String);
+            }
+        }
+        if (watchBreak && *watchBreak) {
+            a2600watch_add(watchBreak);
+            if (a2600sym_parse_range(_dbg, watchBreak, &lo, &hi)) [self breakOnChangeLo:lo hi:hi];
+        }
+        if (gotoText && *gotoText && a2600sym_parse_range(_dbg, gotoText, &lo, &hi)) {
+            _holdMemOnce = YES;
+            [self showMemLo:lo hi:hi];
+        }
+        if (history && *history) a2600debug_trace_enable(_dbg, 1);
+        if (popOut && *popOut) {
+            const int t = tabFromText(popOut);
+            if (t >= 0 && t < NUM_TABS) [self popOutTab:t];
+        }
+    }
+
     __weak A2600DebuggerWindow *weakSelf = self;
-    _tick = [NSTimer scheduledTimerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *t) {
+    _tick = [NSTimer timerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *t) {
         (void)t;
         [weakSelf onTick];
+    }];
+    [[NSRunLoop mainRunLoop] addTimer:_tick forMode:NSRunLoopCommonModes];
+
+    /* F5/F7/F8 wherever the focus is in this window, the console's
+     * field included */
+    _keyMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+                                                        handler:^NSEvent *(NSEvent *event) {
+        A2600DebuggerWindow *strongSelf = weakSelf;
+        if (!strongSelf || ![strongSelf ownsWindow:event.window] || !strongSelf->_window.isVisible) return event;
+        return [strongSelf handleKey:event] ? nil : event;
     }];
     return self;
 }
@@ -299,242 +625,517 @@ static void fill(NSStackView *stack, NSView *view)
 - (void)dealloc
 {
     [_tick invalidate];
-    free(_tiaPx);
+    if (_keyMonitor) [NSEvent removeMonitor:_keyMonitor];
 }
 
+- (void)windowWillClose:(NSNotification *)note
+{
+    if (note.object != _window) return;
+    for (int t = 0; t < NUM_TABS; t++)
+        [_popped[t] orderOut:nil];     /* they come back with the window */
+}
+
+/* Closing a popped-out tab's window docks the tab again. */
+- (BOOL)windowShouldClose:(NSWindow *)sender
+{
+    for (int t = 0; t < NUM_TABS; t++)
+        if (sender == _popped[t]) {
+            [self dockTab:t];
+            return NO;
+        }
+    return YES;
+}
+
+/* The debugger's main window or one of its popped-out tabs. */
+- (BOOL)ownsWindow:(NSWindow *)window
+{
+    if (!window) return NO;
+    if (window == _window) return YES;
+    for (int t = 0; t < NUM_TABS; t++)
+        if (_popped[t] == window) return YES;
+    return NO;
+}
+
+/* The tab the main window's notebook shows, by its place in the full order
+ * (-1 if none). */
+- (NSInteger)currentTab
+{
+    NSTabViewItem *selected = _tabs.selectedTabViewItem;
+    for (int t = 0; t < NUM_TABS; t++)
+        if (_items[t] == selected) return t;
+    return -1;
+}
+
+/* On screen: the notebook's page, or a window of its own. */
+- (BOOL)tabVisible:(int)tab
+{
+    return _popped[tab] != nil || [self currentTab] == tab;
+}
+
+/* A new stop (a pause, a breakpoint, a step): every view goes to the current
+ * spot, even if the reader scrolled away. The History and Trace logs always
+ * follow their newest line. */
+- (void)recentreViews
+{
+    _scrolledAway = NO;
+    _followPc.state = NSControlStateValueOn;
+    _disasmBank = -1;                   /* the PC's bank again */
+    [_bank selectItemAtIndex:0];
+    if (_holdMemOnce) {
+        _holdMemOnce = NO;      /* A2600_DEBUGGER_MEM_GOTO's first look stays */
+        return;
+    }
+    a2600debug_cpu cpu;
+    a2600debug_cpu_get(_dbg, &cpu);
+    _memBase = ((cpu.pc & (BUS_TOP - 1)) & ~0xF) - 2 * 16;
+    _memHl = NO;
+}
+
+/* The poll: refresh on a stop, a resume or a command (the generation), and
+ * the visible tab's live values twice a second while the machine runs. The
+ * FujiNet tab also follows the trace twice a second while stopped, as the
+ * FujiNet's packets arrive on their own. */
 - (void)onTick
 {
     if (![_window isVisible]) return;
     const unsigned gen = a2600debug_generation(_dbg);
     const BOOL stopped = a2600debug_is_stopped(_dbg) != 0;
-    if (gen != _seenGen || stopped != _wasStopped) {
-        _seenGen = gen;
-        _wasStopped = stopped;
-        [self refreshAll];
-    } else if (!stopped && ++_runningTicks >= 5) {
-        _runningTicks = 0;
-        [self refreshStatus];
-        [self refreshCpu];
-        [self refreshTia];
-        [self refreshRiot];
-        if ([_tabs indexOfTabViewItem:_tabs.selectedTabViewItem] == _fujiPage) [self refreshFujinet:NO];
+    const uint64_t stopSerial = a2600debug_stop_serial(_dbg);
+    if (gen != _seenGen || stopped != _wasStopped || stopSerial != _seenStop) {
+        if (stopSerial != _seenStop) {
+            _seenStop = stopSerial;
+            [self recentreViews];
+        }
+        [self refreshNow];
+    } else if (++_liveTicks >= LIVE_TICKS) {
+        _liveTicks = 0;
+        if (!stopped) {
+            [self refreshStatus];
+            [self refreshTab];
+        } else if ([self tabVisible:TAB_FUJINET]) {
+            [self refreshFujinet:NO];
+        }
+    } else if (!stopped && [self tabVisible:TAB_TRACE] && ++_traceTicks >= TRACE_TICKS) {
+        _traceTicks = 0;        /* the Trace tab follows the machine */
+        [self refreshHist:0];
     }
+}
+
+/* Waits up to ~40 ms for a stop to land after the engine was asked to move:
+ * the generation moves on and the machine reads as stopped. */
+- (void)settleFrom:(unsigned)gen
+{
+    for (int i = 0; i < 20; i++) {
+        if (a2600debug_generation(_dbg) != gen && a2600debug_is_stopped(_dbg)) break;
+        usleep(2000);
+    }
+}
+
+- (void)updateHelpContext
+{
+    const NSInteger index = [self currentTab];
+    if (index >= 0 && index < NUM_TABS)
+        A2600SetHelpContext(_window, [@"debugger/" stringByAppendingString:kHelpTabs[index]]);
 }
 
 - (void)tabView:(NSTabView *)tabView didSelectTabViewItem:(NSTabViewItem *)item
 {
     (void)tabView;
-    /* The Help button and Command+? open the tab being shown. */
-    A2600SetHelpContext(_window, [@"debugger/" stringByAppendingString:item.identifier]);
-    if ([_tabs indexOfTabViewItem:item] == _fujiPage) [self refreshFujinet:NO];
+    (void)item;
+    [self updateHelpContext];
+    [self refreshTab];
+    if ([self currentTab] == TAB_CONSOLE) [_window makeFirstResponder:_conIn];
+}
+
+/* ---- keys -------------------------------------------------------------------- */
+
+- (BOOL)handleKey:(NSEvent *)event
+{
+    NSString *chars = event.charactersIgnoringModifiers;
+    if (chars.length != 1) return NO;
+    const NSEventModifierFlags mods = event.modifierFlags;
+    if (mods & (NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagOption)) return NO;
+    const BOOL shift = (mods & NSEventModifierFlagShift) != 0;
+    switch ([chars characterAtIndex:0]) {
+    case NSF5FunctionKey: [self toggleRun:nil]; return YES;
+    case NSF7FunctionKey: [self step:nil]; return YES;
+    case NSF8FunctionKey: if (shift) [self stepOut:nil]; else [self stepOver:nil]; return YES;
+    default: return NO;
+    }
 }
 
 /* ---- construction ------------------------------------------------------------ */
 
-- (NSView *)buildPrompt
+- (NSView *)buildConsole
 {
     NSScrollView *outScroll;
-    _promptOut = monoView(&outScroll, YES);
-    _promptOut.string = @"Stella debugger prompt. Type 'help' for every command.\n";
-    _promptIn = [self field:@"Stella debugger command (help, break, breakIf, trap, watch, frame, tia, ...) — Tab completes"
-                      width:0 action:@selector(runPrompt:)];
-    _promptIn.delegate = self;
-    NSButton *sym = [self button:@"Load symbols" action:@selector(loadSymbols:)];
-    NSStackView *row = hstack(@[_promptIn, sym]);
-    NSStackView *v = vstack(@[outScroll, row]);
+    _conOut = monoView(&outScroll, YES);
+    _conOut.string = @"Debugger console. Type 'help' for every command; Tab completes, Up/Down walk the history.\n";
+    _conIn = [self field:@"command (help, step, break $F000, breakIf {a==5}, trap $80, tia, video, ...) — Tab completes, ↑↓ history"
+                   width:0 action:@selector(runCommand:)];
+    _conIn.delegate = self;
+
+    NSStackView *v = vstack(@[outScroll, _conIn]);
     fill(v, outScroll);
-    fill(v, row);
+    fill(v, _conIn);
     return v;
 }
 
-- (NSView *)buildCpu
+/* The registers, flags and beam, under the tabs on every one of them. */
+- (NSView *)buildRegStrip
 {
-    static NSString *const names[6] = { @"PC", @"SP", @"A", @"X", @"Y", @"PS" };
-    NSMutableArray *regs = [NSMutableArray array];
-    for (int i = 0; i < 6; i++) {
-        [regs addObject:[self label:names[i]]];
-        _reg[i] = [self field:@"" width:56 action:@selector(applyRegister:)];
+    static NSString *const names[NUM_REGS] = { @"PC", @"SP", @"A", @"X", @"Y", @"PS" };
+    NSMutableArray *row1 = [NSMutableArray array];
+    for (int i = 0; i < NUM_REGS; i++) {
+        const CGFloat width = i < 1 ? 52 : 36;
+        [row1 addObject:[self label:names[i]]];
+        _reg[i] = [self field:@"" width:width action:@selector(applyRegister:)];
         _reg[i].tag = i;
-        [regs addObject:_reg[i]];
+        _reg[i].toolTip = @"Edit while the machine is stopped (hex, $hex or a label), then Enter";
+        [row1 addObject:_reg[i]];
     }
-    static NSString *const fnames[7] = { @"N", @"V", @"B", @"D", @"I", @"Z", @"C" };
-    NSMutableArray *flags = [NSMutableArray array];
-    for (int i = 0; i < 7; i++) {
-        _flag[i] = [NSButton checkboxWithTitle:fnames[i] target:self action:@selector(flagClicked:)];
+    static NSString *const flagNames[NUM_FLAGS] = { @"N", @"V", @"B", @"D", @"I", @"Z", @"C" };
+    NSMutableArray *flags = [NSMutableArray arrayWithObject:[self label:@"Flags"]];
+    for (int i = 0; i < NUM_FLAGS; i++) {
+        _flag[i] = [NSButton checkboxWithTitle:flagNames[i] target:self action:@selector(flagClicked:)];
         _flag[i].tag = i;
         [flags addObject:_flag[i]];
     }
-    _cycles = [self label:@""];
-    _cycles.textColor = NSColor.secondaryLabelColor;
-    [flags addObject:_cycles];
+    _beam = [self hint:@""];
+    [flags addObject:_beam];
 
-    NSScrollView *ramScroll;
-    _ram = monoView(&ramScroll, NO);
-    _ramAddr = [self field:@"$80" width:80 action:@selector(writeRam:)];
-    _ramVal = [self field:@"$00" width:60 action:@selector(writeRam:)];
-    NSStackView *edit = hstack(@[[self label:@"Write address"], _ramAddr, [self label:@"value"], _ramVal]);
+    return vstack(@[hstack(row1), hstack(flags)]);
+}
 
-    NSStackView *v = vstack(@[hstack(regs), hstack(flags), [self label:@"Zero-page RAM ($80-$FF)"], ramScroll, edit]);
-    fill(v, ramScroll);
+- (NSView *)buildMemory
+{
+    NSScrollView *memScroll;
+    _mem = rowView(&memScroll);
+    __weak A2600DebuggerWindow *weakSelf = self;
+    _mem.onScroll = ^(int rows) {
+        A2600DebuggerWindow *strongSelf = weakSelf;
+        if (!strongSelf || rows == 0) return;
+        strongSelf->_memBase += rows * 16;
+        [strongSelf refreshMem];
+    };
+    _memGoto = [self field:@"address, label or lo-hi" width:180 action:@selector(gotoMem:)];
+    NSButton *go = [self button:@"Go" action:@selector(gotoMem:)];
+    NSButton *prev = [self button:@"◀" action:@selector(memPrev:)];
+    NSButton *next = [self button:@"▶" action:@selector(memNext:)];
+    NSStackView *memHead = hstack(@[[self label:@"Memory ($0000-$1FFF, as the 6507 sees it)"], [self label:@"Go to"], _memGoto,
+                                    go, prev, next]);
+
+    _srchKind = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [_srchKind addItemsWithTitles:@[@"Hex", @"Text"]];
+    _srchKind.toolTip = @"Hex bytes (A9 00) or text, one byte per character";
+    [_srchKind setRefusesFirstResponder:YES];
+    _srchEntry = [self field:@"hex bytes or text" width:220 action:@selector(searchNext:)];
+    _srchNote = [self hint:@""];
+    NSStackView *searchRow = hstack(@[[self label:@"Search"], _srchKind, _srchEntry,
+                                      [self button:@"Find Next" action:@selector(searchNext:)],
+                                      [self button:@"Find Previous" action:@selector(searchPrev:)], _srchNote]);
+
+    _memWrite = [self field:@"address value" width:170 action:@selector(writeMem:)];
+    NSStackView *edit = hstack(@[[self label:@"Poke"], _memWrite,
+                                 [self hint:@"A write goes through the bus: RAM takes it, the TIA and RIOT see it, a ROM write is "
+                                            @"ignored (a hotspot may switch banks). Several values go to consecutive addresses"]]);
+
+    NSStackView *v = vstack(@[memHead, searchRow, memScroll, edit]);
+    fill(v, memScroll);
     return v;
 }
 
 - (NSView *)buildDisasm
 {
-    _bank = [[NSPopUpButton alloc] init];
+    _bank = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     [_bank addItemWithTitle:@"PC's bank"];
-    const int n = a2600debug_bank_count(_dbg);
-    for (int i = 0; i < n; i++) [_bank addItemWithTitle:[NSString stringWithFormat:@"Bank %d", i]];
+    const int banks = a2600debug_bank_count(_dbg);
+    for (int i = 0; i < banks; i++) [_bank addItemWithTitle:[NSString stringWithFormat:@"Bank %d", i]];
     _bank.target = self;
     _bank.action = @selector(bankChanged:);
-    _followPc = [NSButton checkboxWithTitle:@"Follow PC" target:self action:@selector(refreshDisasm)];
+    [_bank setRefusesFirstResponder:YES];
+    _followPc = [NSButton checkboxWithTitle:@"Follow PC" target:self action:@selector(followToggled:)];
     _followPc.state = NSControlStateValueOn;
     _jump = [self field:@"address or label" width:150 action:@selector(jumpTo:)];
-    NSTextField *hint = [self label:@"Click a line to toggle its breakpoint; scroll to browse"];
-    hint.textColor = NSColor.secondaryLabelColor;
-    NSStackView *row = hstack(@[_bank, _followPc, [self label:@"Jump to"], _jump, hint]);
+    NSStackView *row = hstack(@[_bank, _followPc, [self label:@"Jump to"], _jump,
+                                [self hint:@"Click a line to toggle its breakpoint (red dot on, grey ring off); "
+                                           @"scroll to browse"]]);
 
-    NSScrollView *scroll = [[NSScrollView alloc] init];
-    scroll.hasVerticalScroller = NO;
-    scroll.hasHorizontalScroller = YES;
-    _disasm = [[DasmTextView alloc] initWithFrame:NSMakeRect(0, 0, 600, 600)];
-    _disasm.editable = NO;
-    _disasm.richText = NO;
-    _disasm.selectable = NO;
-    _disasm.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
-    _disasm.horizontallyResizable = YES;
-    _disasm.textContainer.widthTracksTextView = NO;
-    _disasm.textContainer.containerSize = NSMakeSize(FLT_MAX, FLT_MAX);
-    _disasm.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    NSScrollView *scroll;
+    _disasm = rowView(&scroll);
     __weak A2600DebuggerWindow *weakSelf = self;
-    _disasm.onToggleLine = ^(int line) {
-        A2600DebuggerWindow *s = weakSelf;
-        if (!s || line < 0 || line >= s->_lineCount) return;
-        const int bank = s->_disasmBank < 0 ? a2600debug_current_bank(s->_dbg) : s->_disasmBank;
-        a2600debug_breakpoint_toggle(s->_dbg, s->_lineAddr[line], bank);
-        [s refreshDisasm];
-        [s refreshBps];
+    _disasm.onClick = ^(int line, int column, NSInteger clicks) {
+        (void)column;
+        (void)clicks;
+        A2600DebuggerWindow *strongSelf = weakSelf;
+        if (!strongSelf || line < 0 || line >= strongSelf->_lineCount) return;
+        const int bank = strongSelf->_disasmBank < 0 ? a2600debug_current_bank(strongSelf->_dbg)
+                                                      : strongSelf->_disasmBank;
+        a2600debug_breakpoint_toggle(strongSelf->_dbg, strongSelf->_lineAddr[line], bank);
+        [strongSelf refreshDisasm];
+        if ([strongSelf tabVisible:TAB_BREAKS]) [strongSelf refreshBps];
     };
-    _disasm.onScroll = ^(int lines) {
-        A2600DebuggerWindow *s = weakSelf;
-        if (!s || lines == 0) return;
-        s->_followPc.state = NSControlStateValueOff;
-        s->_disasmFirst += lines;
-        [s refreshDisasm];
+    _disasm.onScroll = ^(int rows) {
+        A2600DebuggerWindow *strongSelf = weakSelf;
+        if (!strongSelf || rows == 0) return;
+        strongSelf->_followPc.state = NSControlStateValueOff;
+        strongSelf->_scrolledAway = YES;
+        strongSelf->_disasmFirst += rows;
+        [strongSelf refreshDisasm];
     };
-    scroll.documentView = _disasm;
 
-    NSStackView *v = vstack(@[row, scroll]);
-    fill(v, scroll);
-    return v;
-}
-
-- (NSView *)buildTia
-{
-    NSScrollView *textScroll;
-    _tiaText = monoView(&textScroll, YES);
-    _tiaReg = [self field:@"colup0" width:100 action:@selector(applyTia:)];
-    _tiaVal = [self field:@"$1E" width:70 action:@selector(applyTia:)];
-    NSStackView *edit = hstack(@[[self label:@"Register / strobe"], _tiaReg, [self label:@"value"], _tiaVal]);
-    NSStackView *left = vstack(@[textScroll, edit]);
-    fill(left, textScroll);
-
-    _tiaPic = [[TiaPictureView alloc] initWithFrame:NSMakeRect(0, 0, 320, 240)];
-    [_tiaPic.widthAnchor constraintGreaterThanOrEqualToConstant:320].active = YES;
-    [_tiaPic.heightAnchor constraintGreaterThanOrEqualToConstant:240].active = YES;
-    _tiaPartial = [NSButton checkboxWithTitle:@"Frame in progress (to the beam)" target:self action:@selector(refreshTia)];
-    NSStackView *right = vstack(@[_tiaPic, _tiaPartial]);
-    fill(right, _tiaPic);
-
-    NSStackView *h = hstack(@[left, right]);
-    h.distribution = NSStackViewDistributionFillEqually;
-    h.alignment = NSLayoutAttributeTop;
-    return h;
-}
-
-- (NSView *)buildRiot
-{
-    NSScrollView *scroll;
-    _riot = monoView(&scroll, YES);
-    return scroll;
-}
-
-- (NSView *)buildBreaks
-{
-    _bpEntry = [self field:@"address/label to toggle, or breakIf {..}, trap $80, trapWrite $80 $ff, watch a ..."
-                     width:0 action:@selector(bpEntry:)];
-    NSButton *clear = [self button:@"Clear all" action:@selector(clearBreaks:)];
-    NSStackView *row = hstack(@[_bpEntry, clear]);
-    NSScrollView *scroll;
-    _bps = monoView(&scroll, NO);
     NSStackView *v = vstack(@[row, scroll]);
     fill(v, row);
     fill(v, scroll);
     return v;
 }
 
-- (NSView *)buildStates
+/* The Video tab: a controller (core a2600vidtab.h) behind its own views. */
+- (NSView *)buildVideo
 {
-    NSMutableArray *rows = [NSMutableArray array];
-    for (int row = 0; row < 4; row++) {
-        NSMutableArray *cells = [NSMutableArray array];
-        for (int col = 0; col < 5; col++) {
-            const int slot = (row / 2) * 5 + col;
-            NSButton *b = [self button:[NSString stringWithFormat:@"%@ %d", (row % 2) ? @"Load" : @"Save", slot]
-                                action:(row % 2) ? @selector(loadState:) : @selector(saveState:)];
-            b.tag = slot;
-            [cells addObject:b];
-        }
-        [rows addObject:cells];
-    }
-    NSGridView *grid = [NSGridView gridViewWithViews:rows];
-    grid.rowSpacing = 4;
-    grid.columnSpacing = 6;
+    _video = [[A2600VideoTab alloc] initWithSession:_session];
+    return _video.view;
+}
 
-    NSMutableArray *files = [NSMutableArray array];
-    for (int i = 0; i < 5; i++) {
-        NSButton *b = [self button:kFileTitles[i] action:@selector(saveFile:)];
-        b.tag = i;
-        [files addObject:b];
+/* One table cell: a fixed-width monospace label, or (width 0) the flexible
+ * one that takes what is left. */
+static NSTextField *tableCell(NSString *text, CGFloat width, BOOL bold)
+{
+    NSTextField *l = [NSTextField labelWithString:text];
+    l.font = bold ? [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightSemibold] : monoFont();
+    l.lineBreakMode = NSLineBreakByTruncatingTail;
+    if (width > 0) {
+        [l.widthAnchor constraintEqualToConstant:width].active = YES;
+    } else {
+        [l setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [l setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                    forOrientation:NSLayoutConstraintOrientationHorizontal];
     }
-    _cartInfo = [NSTextField wrappingLabelWithString:@""];
-    _cartInfo.textColor = NSColor.secondaryLabelColor;
+    return l;
+}
 
-    NSStackView *v = vstack(@[[self label:@"Emulator states (Stella's saveState / loadState slots)"], grid,
-                              [self label:@"Save to a file"], hstack(files),
-                              [self label:@"Cartridge"], _cartInfo]);
+- (NSView *)buildBreaks
+{
+    /* the table's rows scroll: a session can collect more breakpoints than
+     * the tab is tall. The stack is the scroll view's document, pinned to
+     * the top and to the clip view's width so rows keep the tab's width. */
+    _bpStop = [self label:@""];
+    _bpStop.textColor = NSColor.secondaryLabelColor;
+    NSStackView *header = hstack(@[tableCell(@"On  #", 70, YES), tableCell(@"Breakpoint", 0, YES),
+                                   tableCell(@"Hits", 60, YES), tableCell(@"", 70, YES)]);
+    header.distribution = NSStackViewDistributionFill;
+    _bpList = vstack(@[]);
+    _bpList.translatesAutoresizingMaskIntoConstraints = NO;
+    NSScrollView *bpScroll = [[NSScrollView alloc] init];
+    bpScroll.hasVerticalScroller = YES;
+    bpScroll.drawsBackground = NO;
+    bpScroll.documentView = _bpList;
+    NSClipView *clip = bpScroll.contentView;
+    [_bpList.topAnchor constraintEqualToAnchor:clip.topAnchor].active = YES;
+    [_bpList.leadingAnchor constraintEqualToAnchor:clip.leadingAnchor].active = YES;
+    [_bpList.widthAnchor constraintEqualToAnchor:clip.widthAnchor].active = YES;
+
+    _bpType = [[NSPopUpButton alloc] init];
+    [_bpType addItemsWithTitles:@[@"Execute", @"Read", @"Write", @"Access"]];
+    _bpType.target = self;
+    _bpType.action = @selector(bpTypeChanged:);
+    _bpBank = [[NSPopUpButton alloc] init];
+    [_bpBank addItemWithTitle:@"Any bank"];
+    const int bankCount = a2600debug_bank_count(_dbg);
+    for (int i = 0; i < bankCount; i++) [_bpBank addItemWithTitle:[NSString stringWithFormat:@"Bank %d", i]];
+    _bpBank.toolTip = @"Execute breakpoints only: the cartridge bank the address is in";
+    _bpStart = [self field:@"$F000, lo-hi or a label" width:250 action:@selector(addBreakpoint:)];
+    _bpEnd = [self field:@"end (optional)" width:120 action:@selector(addBreakpoint:)];
+    _bpCond = [self field:@"condition (optional): a == 5" width:0 action:@selector(addBreakpoint:)];
+    NSButton *add = [self button:@"Add" action:@selector(addBreakpoint:)];
+    NSButton *clearHits = [self button:@"Clear Hits" action:@selector(clearHits:)];
+    NSButton *clear = [self button:@"Clear Breakpoints" action:@selector(clearBreaks:)];
+    NSStackView *row = hstack(@[_bpType, _bpBank, [self label:@"Start"], _bpStart, [self label:@"End"], _bpEnd,
+                                [self label:@"Condition"], _bpCond, add, clearHits, clear]);
+    row.distribution = NSStackViewDistributionFill;
+    _bpErr = [self label:@""];
+    _bpErr.textColor = NSColor.systemRedColor;
+    NSTextField *hint = [self hint:@"Untick to disable. A condition is a Stella expression, e.g. a==$ff or, on a read or write "
+                                   @"break, _value != _old (value and old work too). The bank applies to Execute only; "
+                                   @"the end defaults to the start."];
+
+    NSStackView *v = vstack(@[_bpStop, header, bpScroll, hint, row, _bpErr]);
+    fill(v, header);
+    fill(v, bpScroll);
+    fill(v, row);
+    [bpScroll setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
     return v;
 }
 
+/* Watches: an entry, then a row for each with its value and three buttons. */
+- (NSView *)buildWatches
+{
+    _wtEntry = [self field:@"address, label, expression or lo-hi" width:0 action:@selector(addWatch:)];
+    NSStackView *row = hstack(@[[self label:@"Watch"], _wtEntry, [self button:@"Add" action:@selector(addWatch:)]]);
+    row.distribution = NSStackViewDistributionFill;
+
+    _wtList = vstack(@[]);
+    _wtList.translatesAutoresizingMaskIntoConstraints = NO;
+    NSScrollView *scroll = [[NSScrollView alloc] init];
+    scroll.hasVerticalScroller = YES;
+    scroll.drawsBackground = NO;
+    scroll.documentView = _wtList;
+    NSClipView *clip = scroll.contentView;
+    [_wtList.topAnchor constraintEqualToAnchor:clip.topAnchor].active = YES;
+    [_wtList.leadingAnchor constraintEqualToAnchor:clip.leadingAnchor].active = YES;
+    [_wtList.widthAnchor constraintEqualToAnchor:clip.widthAnchor].active = YES;
+
+    NSTextField *hint = [self hint:@"Values show while the machine is stopped. Show in Memory shows the watch in the Memory "
+                                   @"tab; Break on Change stops when the machine writes a different value there."];
+    NSStackView *v = vstack(@[row, scroll, hint]);
+    fill(v, row);
+    fill(v, scroll);
+    [scroll setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
+    return v;
+}
+
+/* The cartridge, the memory map, the RIOT and the TIA's registers in one text,
+ * with the controls that used to live on the States & Cart tab above it:
+ * Stella's save-state slots, the save-to-file buttons and the TIA register /
+ * strobe setter. */
+- (NSView *)buildCart
+{
+    NSMutableArray<NSView *> *saves = [NSMutableArray arrayWithObject:[self label:@"Save state"]];
+    NSMutableArray<NSView *> *loads = [NSMutableArray arrayWithObject:[self label:@"Load state"]];
+    for (int slot = 0; slot < 10; slot++) {
+        NSButton *save = [self button:[NSString stringWithFormat:@"%d", slot] action:@selector(saveState:)];
+        save.tag = slot;
+        save.toolTip = [NSString stringWithFormat:@"Save Stella's state slot %d", slot];
+        [saves addObject:save];
+        NSButton *load = [self button:[NSString stringWithFormat:@"%d", slot] action:@selector(loadState:)];
+        load.tag = slot;
+        load.toolTip = [NSString stringWithFormat:@"Load Stella's state slot %d", slot];
+        [loads addObject:load];
+    }
+    NSMutableArray<NSView *> *files = [NSMutableArray arrayWithObject:[self label:@"Save to a file"]];
+    for (int i = 0; i < NUM_FILE_KINDS; i++) {
+        NSButton *file = [self button:kFileTitles[i] action:@selector(saveFile:)];
+        file.tag = i;
+        [files addObject:file];
+    }
+    _tiaReg = [self field:@"colup0" width:100 action:@selector(applyTia:)];
+    _tiaVal = [self field:@"$1E" width:70 action:@selector(applyTia:)];
+    NSStackView *tia = hstack(@[[self label:@"TIA register / strobe"], _tiaReg, [self label:@"value"], _tiaVal,
+                                [self button:@"Set" action:@selector(applyTia:)],
+                                [self hint:@"colup0, pf1, posp0, refp0, vsync ...; strobes: wsync rsync resp0 resp1 resm0 "
+                                           @"resm1 resbl hmove hmclr cxclr (no value)"]]);
+
+    NSScrollView *scroll;
+    _cartText = monoView(&scroll, NO);
+    NSStackView *v = vstack(@[hstack(saves), hstack(loads), hstack(files), tia, scroll]);
+    fill(v, scroll);
+    [scroll setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
+    return v;
+}
+
+- (NSView *)buildSound
+{
+    NSScrollView *scroll;
+    _soundText = monoView(&scroll, YES);
+    return scroll;
+}
+
+/* Trace (idx 0) and History (idx 1): two views of the engine's one ring. */
+- (NSView *)buildHist:(int)idx
+{
+    _hRec[idx] = [self button:@"Record" action:@selector(histRec:)];
+    [_hRec[idx] setButtonType:NSButtonTypePushOnPushOff];
+    _hRec[idx].toolTip = @"Record every instruction the CPU runs (the machine runs a little slower)";
+    _hFilter[idx] = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [_hFilter[idx] addItemsWithTitles:@[@"All instructions", @"Branches only", @"In range"]];
+    _hFilter[idx].target = self;
+    _hFilter[idx].action = @selector(histChanged:);
+    [_hFilter[idx] setRefusesFirstResponder:YES];
+    _hRange[idx] = [self field:@"range: lo-hi or a label" width:180 action:@selector(histChanged:)];
+    _hNote[idx] = [self hint:@""];
+    NSStackView *bar = hstack(@[_hRec[idx], _hFilter[idx], _hRange[idx],
+                                [self button:@"Clear" action:@selector(histClear:)], _hNote[idx]]);
+    NSScrollView *scroll;
+    _hText[idx] = monoView(&scroll, NO);
+    NSStackView *v = vstack(@[bar, scroll]);
+    fill(v, bar);
+    fill(v, scroll);
+    return v;
+}
+
+/* Symbols: a filter over the table (built-ins and loaded), a click on a row
+ * goes to its address in the Disassembly. */
+- (NSView *)buildSymbols
+{
+    _symFilter = [self field:@"Filter by name (Enter to apply)" width:260 action:@selector(symFilterChanged:)];
+    _symCount = [self hint:@""];
+    NSStackView *bar = hstack(@[[self label:@"Filter"], _symFilter, _symCount]);
+    _symName = [self field:@"label name" width:180 action:@selector(defineSymbol:)];
+    _symAddr = [self field:@"address" width:100 action:@selector(defineSymbol:)];
+    NSStackView *define = hstack(@[[self label:@"Define"], _symName, [self label:@"="], _symAddr,
+                                   [self button:@"Set Label" action:@selector(defineSymbol:)]]);
+
+    NSScrollView *scroll = [[NSScrollView alloc] init];
+    scroll.hasVerticalScroller = YES;
+    scroll.hasHorizontalScroller = YES;
+    _symList = [[SymbolTextView alloc] initWithFrame:NSMakeRect(0, 0, 600, 400)];
+    _symList.editable = NO;
+    _symList.richText = NO;
+    _symList.selectable = NO;
+    _symList.font = monoFont();
+    _symList.horizontallyResizable = YES;
+    _symList.textContainer.widthTracksTextView = NO;
+    _symList.textContainer.containerSize = NSMakeSize(FLT_MAX, FLT_MAX);
+    _symList.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    __weak A2600DebuggerWindow *weakSelf = self;
+    _symList.onClickLine = ^(int line) {
+        A2600DebuggerWindow *strongSelf = weakSelf;
+        if (!strongSelf || line < 0 || line >= (int)strongSelf->_symAddrs.count) return;
+        [strongSelf showDisassemblyAt:(uint16_t)strongSelf->_symAddrs[(NSUInteger)line].intValue];
+    };
+    scroll.documentView = _symList;
+
+    NSTextField *hint = [self hint:@"Click a symbol to show its address in the Disassembly. Load Symbols reads the .sym / .lst "
+                                   @"beside the cartridge; Clear Symbols drops every user label (Stella's own "
+                                   @"equates stay out of this list)."];
+    NSStackView *v = vstack(@[bar, scroll, define, hint]);
+    fill(v, scroll);
+    return v;
+}
+
+/* The packets left (a note and Clear over them), the cartridge's mailbox
+ * right. */
 - (NSView *)buildFujinet
 {
-    NSTextField *title = [self label:@"FujiBus packets (SLIP-decoded)"];
-    title.font = [NSFont boldSystemFontOfSize:[NSFont systemFontSize]];
     _fujiNote = [self label:@""];
     _fujiNote.textColor = NSColor.secondaryLabelColor;
     _fujiNote.lineBreakMode = NSLineBreakByTruncatingTail;
-    [_fujiNote setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [_fujiNote setContentHuggingPriority:NSLayoutPriorityDefaultLow
+                          forOrientation:NSLayoutConstraintOrientationHorizontal];
     [_fujiNote setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
                                         forOrientation:NSLayoutConstraintOrientationHorizontal];
     NSStackView *row = hstack(@[_fujiNote, [self button:@"Clear" action:@selector(fujiClear:)]]);
-    row.distribution = NSStackViewDistributionFill;
+
     NSScrollView *fujiScroll, *stateScroll;
     _fujiText = monoView(&fujiScroll, NO);
     _fujiState = monoView(&stateScroll, NO);
+    NSTextField *title = [self label:@"FujiBus packets (SLIP-decoded)"];
+    title.font = [NSFont boldSystemFontOfSize:[NSFont systemFontSize]];
     NSStackView *left = vstack(@[title, row, fujiScroll]);
+    left.distribution = NSStackViewDistributionFill;   /* the log takes the column's height */
     fill(left, row);
     fill(left, fujiScroll);
-
     NSTextField *stateTitle = [self label:@"The FujiNet cartridge"];
     stateTitle.font = [NSFont boldSystemFontOfSize:[NSFont systemFontSize]];
     NSStackView *right = vstack(@[stateTitle, stateScroll]);
+    right.distribution = NSStackViewDistributionFill;
     fill(right, stateScroll);
-    [right.widthAnchor constraintEqualToConstant:380].active = YES;
 
     NSStackView *h = hstack(@[left, right]);
-    h.distribution = NSStackViewDistributionFill;
     h.alignment = NSLayoutAttributeTop;
     h.spacing = 12;
+    [left.widthAnchor constraintGreaterThanOrEqualToConstant:520].active = YES;
+    [right.widthAnchor constraintEqualToConstant:380].active = YES;
     [left.heightAnchor constraintEqualToAnchor:h.heightAnchor].active = YES;
     [right.heightAnchor constraintEqualToAnchor:h.heightAnchor].active = YES;
     return h;
@@ -543,53 +1144,59 @@ static void fill(NSStackView *stack, NSView *view)
 - (void)buildWindow
 {
     _window = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(0, 0, 1100, 760)
+        initWithContentRect:NSMakeRect(0, 0, 1180, 840)
                   styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                             NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable
                     backing:NSBackingStoreBuffered
                       defer:NO];
-    _window.title = @"Debugger";
+    _window.title = @"Atari 2600 Debugger";
     _window.releasedWhenClosed = NO;
     _window.delegate = self;
 
-    /* Toolbar row. F5/F7/F8/Shift+F8 work as the buttons' key equivalents
-     * wherever the focus is inside the window. */
+    /* Toolbar rows. The keys are handled by the key monitor, not as the
+     * buttons' key equivalents, so they work wherever the focus is. */
     _runBtn = [self button:@"Stop (F5)" action:@selector(toggleRun:)];
     NSButton *step = [self button:@"Step (F7)" action:@selector(step:)];
-    NSButton *trace = [self button:@"Trace (F8)" action:@selector(trace:)];
-    NSButton *scan = [self button:@"Scan+1" action:@selector(scanline:)];
-    NSButton *frame = [self button:@"Frame+1 (⇧F8)" action:@selector(frame:)];
-    NSButton *rewind = [self button:@"Rewind" action:@selector(rewind:)];
-    NSButton *unwind = [self button:@"Unwind" action:@selector(unwind:)];
-    _runBtn.keyEquivalent = [NSString stringWithFormat:@"%C", (unichar)NSF5FunctionKey];
-    _runBtn.keyEquivalentModifierMask = 0;
-    step.keyEquivalent = [NSString stringWithFormat:@"%C", (unichar)NSF7FunctionKey];
-    step.keyEquivalentModifierMask = 0;
-    trace.keyEquivalent = [NSString stringWithFormat:@"%C", (unichar)NSF8FunctionKey];
-    trace.keyEquivalentModifierMask = 0;
-    frame.keyEquivalent = [NSString stringWithFormat:@"%C", (unichar)NSF8FunctionKey];
-    frame.keyEquivalentModifierMask = NSEventModifierFlagShift;
-    _status = [self label:@"Running"];
-    _status.alignment = NSTextAlignmentRight;
-    _status.textColor = NSColor.secondaryLabelColor;
+    NSButton *over = [self button:@"Step Over (F8)" action:@selector(stepOver:)];
+    NSButton *outBtn = [self button:@"Step Out (⇧F8)" action:@selector(stepOut:)];
+    NSButton *scanBtn = [self button:@"Scan+1" action:@selector(scanline:)];
+    scanBtn.toolTip = @"Run one scanline";
+    NSButton *frameBtn = [self button:@"Frame+1" action:@selector(frame:)];
+    frameBtn.toolTip = @"Run one frame";
+    NSButton *rewindBtn = [self button:@"Rewind" action:@selector(rewind:)];
+    rewindBtn.toolTip = @"Step back one state in Stella's rewind buffer";
+    NSButton *unwindBtn = [self button:@"Unwind" action:@selector(unwind:)];
+    unwindBtn.toolTip = @"Step forward again after a Rewind";
+    NSButton *clearBps = [self button:@"Clear Breakpoints" action:@selector(clearBreaks:)];
+    NSButton *popBtn = [self button:@"Pop Out" action:@selector(popOutCurrent:)];
+    popBtn.toolTip = @"Move the tab that shows into a window of its own; Dock puts it back";
     NSButton *helpBtn = A2600HelpButton(nil);
     [helpBtn setRefusesFirstResponder:YES];
-    NSStackView *toolbar = hstack(@[_runBtn, step, trace, scan, frame, rewind, unwind, _status, helpBtn]);
-    [_status setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSStackView *toolbar = hstack(@[_runBtn, step, over, outBtn, scanBtn, frameBtn, rewindBtn, unwindBtn, clearBps, popBtn, helpBtn]);
+
+    _breakAt = [self field:@"symbol or hex address" width:170 action:@selector(breakAt:)];
+    NSButton *breakBtn = [self button:@"Break" action:@selector(breakAt:)];
+    breakBtn.toolTip = @"Set an execute breakpoint at the symbol or address";
+    NSButton *symbols = [self button:@"Load Symbols" action:@selector(loadSymbols:)];
+    symbols.toolTip = @"Read the .sym / .lst beside the cartridge, as Stella does";
+    NSButton *clearSymbols = [self button:@"Clear Symbols" action:@selector(clearSymbols:)];
+    NSStackView *toolbar2 = hstack(@[[self label:@"Break at:"], _breakAt, breakBtn, symbols, clearSymbols]);
+
+    /* the stop reason gets a row of its own, so it is never cut short */
+    _status = [self label:@"Running"];
+    _status.textColor = NSColor.secondaryLabelColor;
+    _status.lineBreakMode = NSLineBreakByTruncatingTail;
+    [_status setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                      forOrientation:NSLayoutConstraintOrientationHorizontal];
 
     _tabs = [[NSTabView alloc] init];
-    NSArray *pages = @[ @[@"Prompt", [self buildPrompt]], @[@"CPU & RAM", [self buildCpu]],
-                        @[@"Disassembly", [self buildDisasm]], @[@"TIA", [self buildTia]],
-                        @[@"I/O", [self buildRiot]], @[@"Breaks & Traps", [self buildBreaks]],
-                        @[@"States & Cart", [self buildStates]], @[@"FujiNet", [self buildFujinet]] ];
-    _fujiPage = (NSInteger)pages.count - 1;
-    for (NSArray *page in pages) {
-        static const char *const kHelpTabs[] = { "prompt", "cpu", "disassembly", "tia", "io", "breaks",
-                                                 "states", "fujinet" };
-        NSTabViewItem *item = [[NSTabViewItem alloc]
-            initWithIdentifier:@(kHelpTabs[[pages indexOfObject:page]])];
-        item.label = page[0];
-        NSView *content = page[1];
+    NSArray *pages = @[ [self buildConsole], [self buildDisasm], [self buildMemory], [self buildBreaks],
+                        [self buildWatches], [self buildCart], [self buildHist:0], [self buildHist:1],
+                        [self buildVideo], [self buildSound], [self buildSymbols], [self buildFujinet] ];
+    for (int i = 0; i < NUM_TABS; i++) {
+        NSTabViewItem *item = [[NSTabViewItem alloc] initWithIdentifier:kHelpTabs[i]];
+        item.label = kTabTitles[i];
+        NSView *content = pages[(NSUInteger)i];
         NSView *holder = [[NSView alloc] init];
         [holder addSubview:content];
         content.translatesAutoresizingMaskIntoConstraints = NO;
@@ -598,180 +1205,60 @@ static void fill(NSStackView *stack, NSView *view)
         [content.topAnchor constraintEqualToAnchor:holder.topAnchor constant:6].active = YES;
         [content.bottomAnchor constraintEqualToAnchor:holder.bottomAnchor constant:-6].active = YES;
         item.view = holder;
+        _items[i] = item;
         [_tabs addTabViewItem:item];
     }
-    /* a page number, or "fujinet" */
-    const char *tab = getenv("A2600_DEBUGGER_TAB");
-    if (tab && *tab) {
-        const int t = strcasecmp(tab, "fujinet") == 0 ? (int)_fujiPage : atoi(tab);
-        if (t >= 0 && t < (int)_tabs.numberOfTabViewItems) [_tabs selectTabViewItemAtIndex:t];
-    }
+    const int first = tabFromText(getenv("A2600_DEBUGGER_TAB"));
+    if (first >= 0 && first < (int)_tabs.numberOfTabViewItems) [_tabs selectTabViewItemAtIndex:first];
     _tabs.delegate = self;
-    A2600SetHelpContext(_window, [@"debugger/" stringByAppendingString:_tabs.selectedTabViewItem.identifier]);
+    [self updateHelpContext];
 
-    NSStackView *root = vstack(@[toolbar, _tabs]);
+    /* the registers sit under every tab */
+    NSView *strip = [self buildRegStrip];
+    NSStackView *root = vstack(@[toolbar, toolbar2, _status, _tabs, strip]);
     root.edgeInsets = NSEdgeInsetsMake(8, 8, 8, 8);
     [toolbar.widthAnchor constraintEqualToAnchor:root.widthAnchor constant:-16].active = YES;
+    [toolbar2.widthAnchor constraintEqualToAnchor:root.widthAnchor constant:-16].active = YES;
+    [_status.widthAnchor constraintEqualToAnchor:root.widthAnchor constant:-16].active = YES;
     [_tabs.widthAnchor constraintEqualToAnchor:root.widthAnchor constant:-16].active = YES;
+    [strip.widthAnchor constraintEqualToAnchor:root.widthAnchor constant:-16].active = YES;
     _window.contentView = root;
     [_window center];
 }
 
 /* ---- actions ------------------------------------------------------------------ */
 
+/* A line for the status label (and the console's log, when asked). */
+- (void)message:(NSString *)text console:(BOOL)console
+{
+    _status.stringValue = text;
+    if (console) [self appendConsole:[text stringByAppendingString:@"\n"]];
+}
+
 - (void)toggleRun:(id)sender
 {
     (void)sender;
+    const unsigned gen = a2600debug_generation(_dbg);
     if (a2600debug_is_stopped(_dbg)) a2600debug_resume(_dbg); else a2600debug_stop(_dbg);
-    [self refreshAll];
-}
-- (void)step:(id)sender { (void)sender; a2600debug_step(_dbg); [self refreshAll]; }
-- (void)trace:(id)sender { (void)sender; a2600debug_trace(_dbg); [self refreshAll]; }
-- (void)scanline:(id)sender { (void)sender; a2600debug_scanline(_dbg, 1); [self refreshAll]; }
-- (void)frame:(id)sender { (void)sender; a2600debug_frame(_dbg, 1); [self refreshAll]; }
-- (void)rewind:(id)sender { (void)sender; a2600debug_rewind(_dbg, 1); [self refreshAll]; }
-- (void)unwind:(id)sender { (void)sender; a2600debug_unwind(_dbg, 1); [self refreshAll]; }
-
-- (void)appendPrompt:(NSString *)text
-{
-    [_promptOut.textStorage appendAttributedString:
-        [[NSAttributedString alloc] initWithString:text attributes:@{ NSFontAttributeName: _promptOut.font ?: [NSFont userFixedPitchFontOfSize:11] }]];
-    [_promptOut scrollRangeToVisible:NSMakeRange(_promptOut.string.length, 0)];
+    [self settleFrom:gen];
+    [self refreshNow];
 }
 
-- (void)runPrompt:(id)sender
+/* An action that moves the machine: the stop settles (or the poll catches
+ * it, for a long run), then everything shown is read back. */
+- (void)moved:(unsigned)gen
 {
-    (void)sender;
-    static char out[65536];
-    NSString *cmd = [_promptIn.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-    if (cmd.length == 0) return;
-    [self appendPrompt:[NSString stringWithFormat:@"> %@\n", cmd]];
-    a2600debug_command(_dbg, cmd.UTF8String, out, sizeof out);
-    [self appendPrompt:[stripControl(out) stringByAppendingString:@"\n"]];
-    _promptIn.stringValue = @"";
-    [self refreshAll];
+    [self settleFrom:gen];
+    [self refreshNow];
 }
 
-/* Tab in the prompt completes instead of moving the focus. */
-- (BOOL)control:(NSControl *)control textView:(NSTextView *)textView doCommandBySelector:(SEL)sel
-{
-    (void)textView;
-    if (control != _promptIn || sel != @selector(insertTab:)) return NO;
-    NSString *text = _promptIn.stringValue;
-    const NSRange sp = [text rangeOfString:@" " options:NSBackwardsSearch];
-    NSString *word = sp.location == NSNotFound ? text : [text substringFromIndex:sp.location + 1];
-    char comps[4096];
-    const int n = a2600debug_completions(_dbg, word.UTF8String, comps, sizeof comps);
-    if (n == 1) {
-        NSString *c = [[NSString stringWithUTF8String:comps] componentsSeparatedByString:@"\n"][0];
-        NSString *head = sp.location == NSNotFound ? @"" : [text substringToIndex:sp.location + 1];
-        _promptIn.stringValue = [NSString stringWithFormat:@"%@%@ ", head, c];
-        [_promptIn.currentEditor setSelectedRange:NSMakeRange(_promptIn.stringValue.length, 0)];
-    } else if (n > 1) {
-        [self appendPrompt:[NSString stringWithUTF8String:comps] ?: @""];
-    }
-    return YES;
-}
-
-- (void)loadSymbols:(id)sender
-{
-    (void)sender;
-    char msg[512];
-    a2600debug_load_symbols(_dbg, msg, sizeof msg);
-    [self appendPrompt:[stripControl(msg) stringByAppendingString:@"\n"]];
-    [self refreshAll];
-}
-
-- (void)applyRegister:(NSTextField *)sender
-{
-    static const int regIds[6] = { A2600_REG_PC, A2600_REG_SP, A2600_REG_A, A2600_REG_X, A2600_REG_Y, A2600_REG_PS };
-    long v;
-    if (parseNum(sender.stringValue, &v)) a2600debug_cpu_set(_dbg, regIds[sender.tag], (int)v);
-    [self refreshAll];
-}
-
-- (void)flagClicked:(NSButton *)sender
-{
-    static const int flagIds[7] = { A2600_FLAG_N, A2600_FLAG_V, A2600_FLAG_B, A2600_FLAG_D, A2600_FLAG_I, A2600_FLAG_Z, A2600_FLAG_C };
-    if (a2600debug_is_stopped(_dbg))
-        a2600debug_cpu_set(_dbg, flagIds[sender.tag], sender.state == NSControlStateValueOn);
-    [self refreshCpu];
-}
-
-- (void)writeRam:(id)sender
-{
-    (void)sender;
-    long a, v;
-    if (parseNum(_ramAddr.stringValue, &a) && parseNum(_ramVal.stringValue, &v))
-        a2600debug_write(_dbg, (uint16_t)a, (uint8_t)v);
-    [self refreshAll];
-}
-
-- (void)bankChanged:(id)sender
-{
-    (void)sender;
-    const NSInteger sel = _bank.indexOfSelectedItem;
-    _disasmBank = (int)sel - 1;
-    if (sel > 0) _followPc.state = NSControlStateValueOff;
-    _disasmFirst = 0;
-    [self refreshDisasm];
-}
-
-- (void)jumpTo:(id)sender
-{
-    (void)sender;
-    static a2600debug_line lines[256];
-    const int addr = [self resolveAddr:_jump.stringValue];
-    if (addr < 0) return;
-    int total = 0, pcLine = -1, first = 0;
-    _followPc.state = NSControlStateValueOff;
-    for (;;) {
-        const int n = a2600debug_disassemble(_dbg, _disasmBank, first, lines, 256, &total, &pcLine);
-        if (n == 0) break;
-        for (int i = 0; i < n; i++)
-            if (lines[i].address >= addr) { _disasmFirst = first + i; [self refreshDisasm]; return; }
-        first += n;
-        if (first >= total) break;
-    }
-}
-
-- (void)applyTia:(id)sender
-{
-    (void)sender;
-    NSString *reg = [[_tiaReg.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] lowercaseString];
-    if (a2600debug_tia_strobe(_dbg, reg.UTF8String) == 0) { [self refreshAll]; return; }
-    long v;
-    if (parseNum(_tiaVal.stringValue, &v)) a2600debug_tia_set(_dbg, reg.UTF8String, (int)v);
-    [self refreshAll];
-}
-
-- (void)bpEntry:(id)sender
-{
-    (void)sender;
-    NSString *text = [_bpEntry.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-    if (text.length == 0) return;
-    long v;
-    int addr = a2600debug_label_address(_dbg, text.UTF8String);
-    if (addr < 0 && strchr("$#0123456789abcdefABCDEF", [text characterAtIndex:0]) && parseNum(text, &v) && v >= 0 && v <= 0xffff)
-        addr = (int)v;
-    if (addr >= 0) {
-        a2600debug_breakpoint_toggle(_dbg, (uint16_t)addr, A2600DEBUG_ANY_BANK);
-    } else {
-        static char out[2048];
-        a2600debug_command(_dbg, text.UTF8String, out, sizeof out);
-    }
-    _bpEntry.stringValue = @"";
-    [self refreshAll];
-}
-
-- (void)clearBreaks:(id)sender
-{
-    (void)sender;
-    static char out[512];
-    a2600debug_breakpoint_clear(_dbg);
-    a2600debug_command(_dbg, "clearTraps", out, sizeof out);
-    [self refreshAll];
-}
+- (void)step:(id)sender { (void)sender; const unsigned gen = a2600debug_generation(_dbg); a2600debug_step(_dbg); [self moved:gen]; }
+- (void)stepOver:(id)sender { (void)sender; const unsigned gen = a2600debug_generation(_dbg); a2600debug_step_over(_dbg); [self moved:gen]; }
+- (void)stepOut:(id)sender { (void)sender; const unsigned gen = a2600debug_generation(_dbg); a2600debug_step_out(_dbg); [self moved:gen]; }
+- (void)scanline:(id)sender { (void)sender; const unsigned gen = a2600debug_generation(_dbg); a2600debug_scanline(_dbg, 1); [self moved:gen]; }
+- (void)frame:(id)sender { (void)sender; const unsigned gen = a2600debug_generation(_dbg); a2600debug_frame(_dbg, 1); [self moved:gen]; }
+- (void)rewind:(id)sender { (void)sender; const unsigned gen = a2600debug_generation(_dbg); a2600debug_rewind(_dbg, 1); [self moved:gen]; }
+- (void)unwind:(id)sender { (void)sender; const unsigned gen = a2600debug_generation(_dbg); a2600debug_unwind(_dbg, 1); [self moved:gen]; }
 
 - (void)fujiClear:(id)sender
 {
@@ -780,176 +1267,1088 @@ static void fill(NSStackView *stack, NSView *view)
     [self refreshFujinet:YES];
 }
 
-- (void)saveState:(NSButton *)sender { a2600debug_state_save(_dbg, (int)sender.tag); [self refreshAll]; }
-- (void)loadState:(NSButton *)sender { a2600debug_state_load(_dbg, (int)sender.tag); [self refreshAll]; }
+- (void)appendConsole:(NSString *)text
+{
+    const BOOL follow = atEnd(_conOut);     /* a reader scrolled back keeps their place */
+    [_conOut.textStorage appendAttributedString:[[NSAttributedString alloc] initWithString:text attributes:monoAttrs()]];
+    if (follow) [_conOut scrollRangeToVisible:NSMakeRange(_conOut.string.length, 0)];
+}
 
+- (void)runCommand:(id)sender
+{
+    (void)sender;
+    static char out[65536];
+    NSString *cmd = [_conIn.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if (cmd.length == 0) return;
+    if (![_history.lastObject isEqualToString:cmd]) [_history addObject:cmd];
+    _historyPos = (NSInteger)_history.count;
+    [self appendConsole:[NSString stringWithFormat:@"> %@\n", cmd]];
+    out[0] = '\0';
+    const unsigned gen = a2600debug_generation(_dbg);
+    a2600debug_command(_dbg, cmd.UTF8String, out, (int)sizeof out);
+    NSString *text = cstr(out);
+    if (text.length) [self appendConsole:[text hasSuffix:@"\n"] ? text : [text stringByAppendingString:@"\n"]];
+    _conIn.stringValue = @"";
+    [self settleFrom:gen];
+    [self refreshNow];
+}
+
+/* In the console, Tab completes instead of moving the focus, and Up/Down
+ * walk the history. */
+- (BOOL)control:(NSControl *)control textView:(NSTextView *)textView doCommandBySelector:(SEL)sel
+{
+    (void)textView;
+    if (control != _conIn) return NO;
+    if (sel == @selector(moveUp:) || sel == @selector(moveDown:)) {
+        const NSInteger count = (NSInteger)_history.count;
+        if (count == 0) return YES;
+        _historyPos += sel == @selector(moveUp:) ? -1 : 1;
+        if (_historyPos < 0) _historyPos = 0;
+        if (_historyPos > count) _historyPos = count;
+        _conIn.stringValue = _historyPos < count ? _history[(NSUInteger)_historyPos] : @"";
+        [_conIn.currentEditor setSelectedRange:NSMakeRange(_conIn.stringValue.length, 0)];
+        return YES;
+    }
+    if (sel != @selector(insertTab:)) return NO;
+    NSString *text = _conIn.stringValue;
+    const NSRange space = [text rangeOfString:@" " options:NSBackwardsSearch];
+    NSString *word = space.location == NSNotFound ? text : [text substringFromIndex:space.location + 1];
+    char comps[4096];
+    comps[0] = '\0';
+    const int count = a2600debug_completions(_dbg, word.UTF8String, comps, (int)sizeof comps);
+    NSString *list = cstr(comps);
+    if (count == 1) {
+        NSString *completion = [list componentsSeparatedByString:@"\n"][0];
+        NSString *head = space.location == NSNotFound ? @"" : [text substringToIndex:space.location + 1];
+        _conIn.stringValue = [NSString stringWithFormat:@"%@%@ ", head, completion];
+        [_conIn.currentEditor setSelectedRange:NSMakeRange(_conIn.stringValue.length, 0)];
+    } else if (count > 1) {
+        if (![list hasSuffix:@"\n"]) list = [list stringByAppendingString:@"\n"];
+        [self appendConsole:list];
+    }
+    return YES;
+}
+
+/* Stella's own: <cart>.sym / .lst next to the cartridge. */
+- (void)loadSymbols:(id)sender
+{
+    (void)sender;
+    char msg[512];
+    msg[0] = '\0';
+    a2600debug_load_symbols(_dbg, msg, (int)sizeof msg);
+    [self message:cstr(msg) console:YES];
+    [self refreshNow];
+}
+
+- (void)clearSymbols:(id)sender
+{
+    (void)sender;
+    a2600debug_clear_symbols(_dbg);
+    [self message:@"Loaded symbols cleared" console:YES];
+    [self refreshNow];
+}
+
+/* A Symbols-tab edit: name = address. */
+- (void)defineSymbol:(id)sender
+{
+    (void)sender;
+    NSString *name = [_symName.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    NSString *why = nil;
+    const int address = [self resolveAddr:_symAddr.stringValue why:&why];
+    if (name.length == 0 || address < 0) {
+        [self message:@"Define: a label name and an address" console:NO];
+        return;
+    }
+    if (a2600debug_set_label(_dbg, (uint16_t)address, name.UTF8String) < 0) {
+        [self message:[NSString stringWithFormat:@"The label %@ was refused", name] console:NO];
+        return;
+    }
+    _symName.stringValue = @"";
+    _symAddr.stringValue = @"";
+    [self message:[NSString stringWithFormat:@"%@ = $%04X", name, address] console:NO];
+    [self refreshNow];
+}
+
+/* The Cart & I/O tab's save-to-file buttons (tag: the kind). */
 - (void)saveFile:(NSButton *)sender
 {
-    NSSavePanel *p = [NSSavePanel savePanel];
-    p.title = [NSString stringWithFormat:@"Save %@", kFileTitles[sender.tag]];
-    if ([p runModal] != NSModalResponseOK) return;
+    const NSInteger kind = sender.tag;
+    if (kind < 0 || kind >= NUM_FILE_KINDS) return;
+    NSSavePanel *panel = [NSSavePanel savePanel];
+    panel.title = [NSString stringWithFormat:@"Save %@", kFileTitles[kind]];
+    if ([panel runModal] != NSModalResponseOK) return;
     char msg[512];
-    a2600debug_save(_dbg, kFileKinds[sender.tag], [[p URL] fileSystemRepresentation], msg, sizeof msg);
-    [self appendPrompt:[stripControl(msg) stringByAppendingString:@"\n"]];
+    msg[0] = '\0';
+    a2600debug_save(_dbg, kFileKinds[kind], [[panel URL] fileSystemRepresentation], msg, (int)sizeof msg);
+    [self message:cstr(msg) console:YES];
+}
+
+/* Stella's save-state slots 0-9 (the button's tag). */
+- (void)saveState:(NSButton *)sender
+{
+    a2600debug_state_save(_dbg, (int)sender.tag);
+    [self message:[NSString stringWithFormat:@"Saved state slot %ld", (long)sender.tag] console:NO];
+    [self refreshNow];
+}
+
+- (void)loadState:(NSButton *)sender
+{
+    a2600debug_state_load(_dbg, (int)sender.tag);
+    [self message:[NSString stringWithFormat:@"Loaded state slot %ld", (long)sender.tag] console:NO];
+    [self refreshNow];
+}
+
+/* A TIA register by name (colup0, pf1, posp0 ...) with its value, or a strobe
+ * (wsync, resp0, hmove ...) with none. */
+- (void)applyTia:(id)sender
+{
+    (void)sender;
+    NSString *reg = [[_tiaReg.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]
+                     lowercaseString];
+    if (reg.length == 0) return;
+    if (a2600debug_tia_strobe(_dbg, reg.UTF8String) == 0) {
+        [self message:[NSString stringWithFormat:@"Strobed %@", reg] console:NO];
+    } else {
+        long value;
+        NSString *why = nil;
+        if ([self evaluate:_tiaVal.stringValue into:&value why:&why]) {
+            if (a2600debug_tia_set(_dbg, reg.UTF8String, (int)value) < 0)
+                [self message:[NSString stringWithFormat:@"%@ is not a TIA register or strobe", reg] console:NO];
+            else
+                [self message:[NSString stringWithFormat:@"%@ = $%02lX", reg, value & 0xFF] console:NO];
+        } else {
+            [self message:[NSString stringWithFormat:@"TIA value: %@", why] console:NO];
+        }
+    }
+    [self refreshNow];
+}
+
+- (void)applyRegister:(NSTextField *)sender
+{
+    static const int regIds[NUM_REGS] = {
+        A2600_REG_PC, A2600_REG_SP, A2600_REG_A, A2600_REG_X, A2600_REG_Y, A2600_REG_PS
+    };
+    long value;
+    NSString *why = nil;
+    [_window makeFirstResponder:nil];       /* leave the field, so the refresh may rewrite it */
+    if (!a2600debug_is_stopped(_dbg)) {
+        [self message:@"Stop the machine (F5) to edit registers" console:NO];
+    } else if (sender.tag < 0 || sender.tag >= NUM_REGS) {
+        /* not one of ours */
+    } else if ([self evaluate:sender.stringValue into:&value why:&why]) {
+        a2600debug_cpu_set(_dbg, regIds[sender.tag], (int)value);
+    } else {
+        [self message:[NSString stringWithFormat:@"Register: %@", why] console:NO];
+    }
+    [self refreshCpu];
+    if ([self tabVisible:TAB_DISASM]) [self refreshDisasm];
+}
+
+- (void)flagClicked:(NSButton *)sender
+{
+    static const int flagIds[NUM_FLAGS] = { A2600_FLAG_N, A2600_FLAG_V, A2600_FLAG_B, A2600_FLAG_D, A2600_FLAG_I, A2600_FLAG_Z,
+                                            A2600_FLAG_C };
+    if (sender.tag >= 0 && sender.tag < NUM_FLAGS && a2600debug_is_stopped(_dbg))
+        a2600debug_cpu_set(_dbg, flagIds[sender.tag], sender.state == NSControlStateValueOn);
+    else
+        [self message:@"Stop the machine (F5) to edit flags" console:NO];
+    [self refreshCpu];
+}
+
+/* Brings a range into the dump (a couple of rows down from the top) and
+ * highlights it. */
+- (void)showMemLo:(int)lo hi:(int)hi
+{
+    /* the bus is 13 bits: a mirror ($F000) lands on its twin ($1000) */
+    lo &= BUS_TOP - 1;
+    hi &= BUS_TOP - 1;
+    if (hi < lo) hi = lo;
+    _memBase = (lo & ~0xF) - 2 * 16;
+    _memHl = YES;
+    _memHlLo = lo;
+    _memHlHi = hi;
+    [self refreshMem];
+}
+
+- (void)gotoMem:(id)sender
+{
+    (void)sender;
+    uint16_t lo, hi;
+    if (!a2600sym_parse_range(_dbg, _memGoto.stringValue.UTF8String, &lo, &hi)) {
+        [self message:[NSString stringWithFormat:@"Go to %@: not an address, label or range", _memGoto.stringValue]
+              console:NO];
+        return;
+    }
+    [self showMemLo:lo hi:hi];
+}
+
+- (void)memPrev:(id)sender { (void)sender; _memBase -= MEM_BYTES; [self refreshMem]; }
+- (void)memNext:(id)sender { (void)sender; _memBase += MEM_BYTES; [self refreshMem]; }
+
+/* "address value [value...]": the values land at consecutive addresses. */
+- (void)writeMem:(id)sender
+{
+    (void)sender;
+    NSArray<NSString *> *words = [_memWrite.stringValue componentsSeparatedByCharactersInSet:
+        [NSCharacterSet whitespaceCharacterSet]];
+    NSMutableArray<NSString *> *tokens = [NSMutableArray array];
+    for (NSString *word in words)
+        if (word.length) [tokens addObject:word];
+    NSString *why = nil;
+    const int address = tokens.count > 0 ? [self resolveAddr:tokens[0] why:&why] : -1;
+    if (tokens.count < 2 || address < 0) {
+        [self message:@"Poke: address value [value...]" console:NO];
+        return;
+    }
+    for (NSUInteger i = 1; i < tokens.count; i++) {
+        long value;
+        if (![self evaluate:tokens[i] into:&value why:&why] || value < 0 || value > 0xFF ||
+            address + (int)i - 1 > 0xFFFF) {
+            [self message:[NSString stringWithFormat:@"Not a byte: %@", tokens[i]] console:NO];
+            return;
+        }
+        a2600debug_write(_dbg, (uint16_t)(address + (int)i - 1), (uint8_t)value);
+    }
+    _memWrite.stringValue = @"";
+    if (address < _memBase || address >= _memBase + MEM_BYTES) [self showMemLo:address hi:address];
+    else [self refreshMem];
+}
+
+- (void)followToggled:(id)sender
+{
+    (void)sender;
+    _scrolledAway = NO;
+    [self refreshDisasm];
+}
+
+- (void)jumpTo:(id)sender
+{
+    (void)sender;
+    NSString *why = nil;
+    const int addr = [self resolveAddr:_jump.stringValue why:&why];
+    if (addr < 0) {
+        [self message:[NSString stringWithFormat:@"Jump to %@: %@", _jump.stringValue, why] console:NO];
+        return;
+    }
+    [self showDisassemblyAt:(uint16_t)addr];
+}
+
+/* The bank chooser: a bank's listing from its top, or the PC's bank. */
+- (void)bankChanged:(id)sender
+{
+    (void)sender;
+    const NSInteger selection = _bank.indexOfSelectedItem;
+    _disasmBank = (int)selection - 1;
+    if (selection > 0) _followPc.state = NSControlStateValueOff;
+    _scrolledAway = selection > 0;
+    _disasmFirst = 0;
+    [self refreshDisasm];
+}
+
+/* The Disassembly from an address on (off the PC, until the next stop): the
+ * address is looked for in the chosen bank's listing, a page of lines at a
+ * time (the 6507's mirrors compare on the 13-bit bus). */
+- (void)showDisassemblyAt:(uint16_t)addr
+{
+    static a2600debug_line lines[256];
+    int total = 0, pcLine = -1, first = 0;
+    BOOL found = NO, before = NO;
+    const int want = addr & (BUS_TOP - 1);
+    for (;;) {
+        const int n = a2600debug_disassemble(_dbg, _disasmBank, first, lines, 256, &total, &pcLine);
+        if (n <= 0) break;
+        for (int i = 0; i < n && !found; i++) {
+            if ((lines[i].address & (BUS_TOP - 1)) >= want) {
+                if (first + i == 0 && (lines[i].address & (BUS_TOP - 1)) > want) {         /* before the listing */
+                    before = YES;
+                    break;
+                }
+                _disasmFirst = first + i;
+                found = YES;
+            }
+        }
+        if (found || before) break;
+        first += n;
+        if (first >= total) break;
+    }
+    if (!found) {
+        [self message:[NSString stringWithFormat:@"$%04X is not in this bank's listing", addr] console:NO];
+        return;
+    }
+    _followPc.state = NSControlStateValueOff;
+    _scrolledAway = YES;
+    [self showTab:TAB_DISASM];
+    [self refreshDisasm];
+}
+
+/* The toolbar's "Break at:": a symbol or hex address gets an execute
+ * breakpoint (one already there is left as it is). */
+- (void)breakAt:(id)sender
+{
+    (void)sender;
+    NSString *why = nil;
+    const int addr = [self resolveAddr:_breakAt.stringValue why:&why];
+    if (addr < 0) {
+        [self message:[NSString stringWithFormat:@"Break at %@: %@", _breakAt.stringValue, why] console:NO];
+        return;
+    }
+    if (a2600debug_breakpoint_check(_dbg, (uint16_t)addr, A2600DEBUG_ANY_BANK)) {
+        [self message:[NSString stringWithFormat:@"A breakpoint is already set at $%04X", addr] console:NO];
+        return;
+    }
+    a2600debug_breakpoint_toggle(_dbg, (uint16_t)addr, A2600DEBUG_ANY_BANK);
+    _breakAt.stringValue = @"";
+    [self message:[NSString stringWithFormat:@"Breakpoint at $%04X", addr] console:NO];
+    [self refreshNow];
+}
+
+- (void)symFilterChanged:(id)sender
+{
+    (void)sender;
+    [self refreshSymbols];
+}
+
+- (void)addBreakpoint:(id)sender
+{
+    (void)sender;
+    static const int types[4] = { A2600DEBUG_BP_EXEC, A2600DEBUG_BP_READ, A2600DEBUG_BP_WRITE, A2600DEBUG_BP_ACCESS };
+    const NSInteger sel = _bpType.indexOfSelectedItem;
+    const int type = types[sel >= 0 && sel < 4 ? sel : 0];
+    NSString *what = @"address";
+    NSString *startText = [_bpStart.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    NSString *endText = [_bpEnd.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if (startText.length == 0) {
+        _bpErr.stringValue = [NSString stringWithFormat:@"Give a %@", what];
+        return;
+    }
+    NSString *why = nil;
+    int start, end;
+    if (endText.length) {
+        start = [self resolveAddr:startText why:&why];
+        end = [self resolveAddr:endText why:&why];
+    } else {
+        /* one field: a number, a symbol or a range lo-hi */
+        uint16_t lo, hi;
+        if (a2600sym_parse_range(_dbg, startText.UTF8String, &lo, &hi)) {
+            start = lo;
+            end = hi;
+        } else {
+            start = end = -1;
+        }
+    }
+    /* an Execute address is any pc ($0000-$FFFF); Read/Write/Access watch the 13-bit bus */
+    const int last = type == A2600DEBUG_BP_EXEC ? 0xFFFF : BUS_TOP - 1;
+    if (start < 0 || end < 0 || end < start || end > last) {
+        _bpErr.stringValue = [NSString stringWithFormat:@"Bad %@ range: %@%@%@%@%@ (allowed up to $%X)", what, startText,
+                              endText.length ? @" - " : @"", endText, why.length ? @" (" : @"",
+                              why.length ? [why stringByAppendingString:@")"] : @"", last];
+        return;
+    }
+    const NSInteger bankSel = _bpBank.indexOfSelectedItem;
+    const int bank = (type == A2600DEBUG_BP_EXEC && bankSel > 0) ? (int)bankSel - 1 : A2600DEBUG_ANY_BANK;
+    const int bpId = a2600debug_bp_add(_dbg, type, (uint16_t)start, (uint16_t)end, bank, _bpCond.stringValue.UTF8String);
+    if (bpId < 0) {
+        _bpErr.stringValue = @"The condition does not parse";
+        return;
+    }
+    _bpErr.stringValue = @"";
+    _bpStart.stringValue = @"";
+    _bpEnd.stringValue = @"";
+    _bpCond.stringValue = @"";
+    [self refreshNow];
+}
+
+- (void)bpEnabled:(NSButton *)sender
+{
+    a2600debug_bp_enable(_dbg, (int)sender.tag, sender.state == NSControlStateValueOn);
+    [self refreshNow];
+}
+
+- (void)bpRemove:(NSButton *)sender
+{
+    a2600debug_bp_remove(_dbg, (int)sender.tag);
+    [self refreshNow];
+}
+
+- (void)clearBreaks:(id)sender
+{
+    (void)sender;
+    a2600debug_breakpoint_clear(_dbg);
+    [self refreshNow];
+}
+
+/* The bank applies to Execute breakpoints only. */
+- (void)bpTypeChanged:(id)sender
+{
+    (void)sender;
+    _bpBank.enabled = _bpType.indexOfSelectedItem == 0;
+}
+
+- (void)clearHits:(id)sender
+{
+    (void)sender;
+    a2600debug_bp_clear_hits(_dbg);
+    _bpSig = nil;       /* the hit counts redraw */
+    [self refreshNow];
+}
+
+/* ---- watches, search, trace, pop out ---------------------------------------------- */
+
+- (void)addWatch:(id)sender
+{
+    (void)sender;
+    NSString *text = [_wtEntry.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if (text.length == 0 || a2600watch_add(text.UTF8String) < 0) {
+        [self message:@"Type an address, label, expression or lo-hi range to watch" console:NO];
+        return;
+    }
+    _wtEntry.stringValue = @"";
+    [self refreshWatches];
+    if ([self tabVisible:TAB_MEMORY]) [self refreshMem];
+}
+
+/* A Write breakpoint over lo..hi that fires when the value changes. */
+- (void)breakOnChangeLo:(uint16_t)lo hi:(uint16_t)hi
+{
+    if (a2600debug_bp_add(_dbg, A2600DEBUG_BP_WRITE, lo, hi, A2600DEBUG_ANY_BANK, "_value != _old") < 0) {
+        [self message:@"The breakpoint was refused" console:NO];
+        return;
+    }
+    [self message:@"Breaking when it changes" console:NO];
+    [self refreshNow];
+}
+
+/* Selects a tab, or raises the window it was popped out into. */
+- (void)showTab:(int)tab
+{
+    if (_popped[tab]) {
+        [_popped[tab] makeKeyAndOrderFront:nil];
+        return;
+    }
+    [_tabs selectTabViewItem:_items[tab]];
+}
+
+- (void)wtMemory:(NSButton *)sender
+{
+    uint16_t lo, hi;
+    if (!a2600watch_range(_dbg, (int)sender.tag, &lo, &hi)) {
+        [self message:@"That watch does not resolve" console:NO];
+        return;
+    }
+    [self showTab:TAB_MEMORY];
+    [self showMemLo:lo hi:hi];
+}
+
+- (void)wtBreak:(NSButton *)sender
+{
+    uint16_t lo, hi;
+    if (!a2600watch_range(_dbg, (int)sender.tag, &lo, &hi)) {
+        [self message:@"That watch does not resolve" console:NO];
+        return;
+    }
+    [self breakOnChangeLo:lo hi:hi];
+}
+
+- (void)wtRemove:(NSButton *)sender
+{
+    a2600watch_remove((int)sender.tag);
+    [self refreshWatches];
+}
+
+- (void)searchBackward:(BOOL)backward
+{
+    uint8_t pattern[A2600SEARCH_MAX], mask = 0xFF;
+    int length = 0, flags = 0;
+    if (!a2600search_parse((int)_srchKind.indexOfSelectedItem, _srchEntry.stringValue.UTF8String, pattern, &length,
+                         &mask, &flags) || length <= 0) {
+        _srchNote.stringValue = @"Type hex bytes (A9 00) or some text.";
+        return;
+    }
+    if (!a2600debug_is_stopped(_dbg)) {
+        _srchNote.stringValue = @"Stop the machine first.";
+        return;
+    }
+    const uint16_t from = _memHl ? (backward ? (uint16_t)_memHlLo : (uint16_t)(_memHlLo + 1)) : (uint16_t)_memBase;
+    uint16_t found = 0;
+    const int result = a2600debug_search_next(_dbg, pattern, length, mask, flags, from, backward ? 1 : 0, &found);
+    if (result < 0) {
+        _srchNote.stringValue = @"Stop the machine first.";
+    } else if (result == 0) {
+        _srchNote.stringValue = @"Not found.";
+    } else {
+        _srchNote.stringValue = [NSString stringWithFormat:@"Found at $%04X", found];
+        [self showMemLo:found hi:found + length - 1];
+    }
+}
+
+- (void)searchNext:(id)sender { (void)sender; [self searchBackward:NO]; }
+- (void)searchPrev:(id)sender { (void)sender; [self searchBackward:YES]; }
+
+/* Both Record buttons follow the engine's one recorder. */
+- (void)syncRecord:(BOOL)on
+{
+    for (int k = 0; k < 2; k++) {
+        const NSInteger want = on ? NSControlStateValueOn : NSControlStateValueOff;
+        if (_hRec[k].state != want) {
+            _hRec[k].state = want;
+            setButtonAccent(_hRec[k], on);
+        }
+    }
+}
+
+- (void)histRec:(NSButton *)sender
+{
+    a2600debug_trace_enable(_dbg, sender.state == NSControlStateValueOn);
+    [self syncRecord:a2600debug_trace_enabled(_dbg) != 0];
+    [self refreshTab];
+}
+
+- (void)histChanged:(id)sender
+{
+    (void)sender;
+    [self refreshTab];
+}
+
+- (void)histClear:(id)sender
+{
+    (void)sender;
+    a2600debug_trace_clear(_dbg);
+    [self refreshTab];
+}
+
+- (void)popOutCurrent:(id)sender
+{
+    (void)sender;
+    const NSInteger tab = [self currentTab];
+    if (tab >= 0) [self popOutTab:(int)tab];
+}
+
+/* Moves a tab into a window of its own. One tab always stays. */
+- (void)popOutTab:(int)tab
+{
+    if (tab < 0 || tab >= NUM_TABS || _popped[tab] || _tabs.numberOfTabViewItems <= 1) return;
+    NSTabViewItem *item = _items[tab];
+    NSView *view = item.view;
+    [_tabs removeTabViewItem:item];
+
+    NSWindow *win = [[NSWindow alloc]
+        initWithContentRect:NSMakeRect(0, 0, 820, 580)
+                  styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                            NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable
+                    backing:NSBackingStoreBuffered
+                      defer:NO];
+    win.title = [@"Atari 2600 Debugger - " stringByAppendingString:kTabTitles[tab]];
+    win.releasedWhenClosed = NO;
+    win.delegate = self;
+    NSButton *dockBtn = [self button:@"Dock" action:@selector(dockButton:)];
+    dockBtn.tag = tab;
+    dockBtn.toolTip = @"Put this tab back in the debugger";
+    NSView *root = [[NSView alloc] init];
+    dockBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    view.translatesAutoresizingMaskIntoConstraints = NO;
+    [root addSubview:dockBtn];
+    [root addSubview:view];
+    [dockBtn.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:8].active = YES;
+    [dockBtn.topAnchor constraintEqualToAnchor:root.topAnchor constant:8].active = YES;
+    [view.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:8].active = YES;
+    [view.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-8].active = YES;
+    [view.topAnchor constraintEqualToAnchor:dockBtn.bottomAnchor constant:6].active = YES;
+    [view.bottomAnchor constraintEqualToAnchor:root.bottomAnchor constant:-8].active = YES;
+    win.contentView = root;
+    A2600SetHelpContext(win, [@"debugger/" stringByAppendingString:kHelpTabs[tab]]);
+    _popped[tab] = win;
+    [win center];
+    [win makeKeyAndOrderFront:nil];
+    [self updateHelpContext];
+    [self refreshTab];
+}
+
+- (void)dockButton:(id)sender
+{
+    [self dockTab:(int)((NSButton *)sender).tag];
+}
+
+/* Puts a popped-out tab back where it was in the order. */
+- (void)dockTab:(int)tab
+{
+    if (tab < 0 || tab >= NUM_TABS) return;
+    NSWindow *win = _popped[tab];
+    if (!win) return;
+    NSTabViewItem *item = _items[tab];
+    NSView *view = item.view;
+    int position = 0;
+    _popped[tab] = nil;
+    win.delegate = nil;
+    [view removeFromSuperview];
+    view.translatesAutoresizingMaskIntoConstraints = YES;     /* the tab view sizes it again */
+    item.view = view;
+    for (int t = 0; t < tab; t++)
+        if (!_popped[t]) position++;
+    [_tabs insertTabViewItem:item atIndex:position];
+    [_tabs selectTabViewItem:item];
+    [win orderOut:nil];
+    [self updateHelpContext];
+    [self refreshTab];
 }
 
 /* ---- refreshers ------------------------------------------------------------------ */
 
+/* Everything the window shows, read back now: the status and the visible
+ * tab. The poll compares against what was seen here. */
+- (void)refreshNow
+{
+    _seenGen = a2600debug_generation(_dbg);
+    _wasStopped = a2600debug_is_stopped(_dbg) != 0;
+    _liveTicks = 0;
+    [self refreshStatus];
+    [self refreshTab];
+}
+
+/* The registers, and each tab on show (the notebook's page and any popped-out
+ * window): the others refresh when they are selected. */
+- (void)refreshTab
+{
+    [self refreshCpu];
+    if (![self tabVisible:TAB_VIDEO]) _videoShown = NO;
+    for (int t = 0; t < NUM_TABS; t++)
+        if ([self tabVisible:t]) [self refreshTabAt:t];
+}
+
+- (void)refreshTabAt:(int)tab
+{
+    switch (tab) {
+    case TAB_DISASM: [self refreshDisasm]; break;
+    case TAB_MEMORY: [self refreshMem]; break;
+    case TAB_BREAKS: [self refreshBps]; break;
+    case TAB_WATCHES: [self refreshWatches]; break;
+    case TAB_CART: [self refreshCart]; break;
+    case TAB_TRACE: [self refreshHist:0]; break;
+    case TAB_HIST: [self refreshHist:1]; break;
+    case TAB_VIDEO: [self refreshVideo]; break;
+    case TAB_SOUND: [self refreshSound]; break;
+    case TAB_SYMBOLS: [self refreshSymbols]; break;
+    case TAB_FUJINET: [self refreshFujinet:NO]; break;
+    default: break;
+    }
+}
+
 - (void)refreshStatus
 {
-    char reason[160], info[256];
-    int addr;
+    char reason[160];
+    int addr = -1;
     const BOOL stopped = a2600debug_is_stopped(_dbg) != 0;
-    a2600debug_stop_reason(_dbg, reason, sizeof reason, &addr);
-    a2600debug_cart_info(_dbg, info, sizeof info);
-    _status.stringValue = stopped ? [NSString stringWithFormat:@"Stopped%s%s", reason[0] ? ": " : "", reason] : @"Running";
-    _cartInfo.stringValue = stripControl(info);
+    reason[0] = '\0';
+    a2600debug_stop_reason(_dbg, reason, (int)sizeof reason, &addr);
+    NSString *why = cstr(reason);
+    _status.stringValue = stopped ? [NSString stringWithFormat:@"Stopped%@%@", why.length ? @": " : @"", why] : @"Running";
     _runBtn.title = stopped ? @"Run (F5)" : @"Stop (F5)";
-    _runBtn.bezelColor = stopped ? A2600AccentColor() : nil;
+    setButtonAccent(_runBtn, stopped);    /* the accent while stopped */
 }
 
 - (void)refreshCpu
 {
     a2600debug_cpu c;
     a2600debug_cpu_get(_dbg, &c);
-    const int vals[6] = { c.pc, c.sp, c.a, c.x, c.y, c.ps };
-    for (int i = 0; i < 6; i++)
-        if (!_reg[i].currentEditor)
-            _reg[i].stringValue = [NSString stringWithFormat:(i == 0 ? @"%04X" : @"%02X"), vals[i]];
-    const int flags[7] = { c.n, c.v, c.b, c.d, c.i, c.z, c.c };
-    for (int i = 0; i < 7; i++) _flag[i].state = flags[i] ? NSControlStateValueOn : NSControlStateValueOff;
-    _cycles.stringValue = [NSString stringWithFormat:@"last instruction: %d cycles, total %llu", c.cycles,
-                           (unsigned long long)c.total_cycles];
+    const int vals[NUM_REGS] = { c.pc, c.sp, c.a, c.x, c.y, c.ps };
+    for (int i = 0; i < NUM_REGS; i++)
+        if (!_reg[i].currentEditor)         /* never over a field being edited */
+            _reg[i].stringValue = [NSString stringWithFormat:(i < 1 ? @"%04X" : @"%02X"), vals[i]];
+    const int flags[NUM_FLAGS] = { c.n, c.v, c.b, c.d, c.i, c.z, c.c };
+    for (int i = 0; i < NUM_FLAGS; i++) _flag[i].state = flags[i] ? NSControlStateValueOn : NSControlStateValueOff;
+    a2600debug_tia tia;
+    a2600debug_tia_get(_dbg, &tia);
+    _beam.stringValue = [NSString stringWithFormat:@"frame %d   scanline %d   clock %d   last instruction %d cycles   total %llu",
+                                                   tia.frame_count, tia.scanlines, tia.clocks_this_line, c.cycles,
+                                                   (unsigned long long)c.total_cycles];
 }
 
-- (void)refreshRam
+/* The 6507's 8K bus a page at a time; each row ends with the name of the region it
+ * lies in (one a2600debug_memory_map per refresh). The highlighted range is
+ * the accent fill, the watched ranges the selection colour. */
+- (void)refreshMem
 {
-    uint8_t ram[128];
-    a2600debug_ram_get(_dbg, ram);
-    NSMutableString *text = [NSMutableString stringWithString:@"      0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F\n"];
-    for (int row = 0; row < 8; row++) {
-        [text appendFormat:@"$%02X: ", 0x80 + row * 16];
-        for (int col = 0; col < 16; col++) [text appendFormat:@"%02X ", ram[row * 16 + col]];
-        [text appendString:@"\n"];
+    static a2600debug_region regions[MAX_REGIONS];
+    uint8_t data[MEM_BYTES];
+    if (_memBase > BUS_TOP - MEM_BYTES) _memBase = BUS_TOP - MEM_BYTES;
+    if (_memBase < 0) _memBase = 0;
+    _memBase &= ~0xF;
+    memset(data, 0, sizeof data);
+    a2600debug_read(_dbg, (uint16_t)_memBase, data, MEM_BYTES);
+    int regionCount = a2600debug_memory_map(_dbg, regions, MAX_REGIONS);
+    if (regionCount < 0) regionCount = 0;
+    if (regionCount > MAX_REGIONS) regionCount = MAX_REGIONS;
+
+    int watchLo[A2600WATCH_MAX], watchHi[A2600WATCH_MAX], watchCount = 0;
+    for (int i = 0; i < a2600watch_count() && watchCount < A2600WATCH_MAX; i++) {
+        uint16_t lo, hi;
+        if (a2600watch_range(_dbg, i, &lo, &hi)) {
+            watchLo[watchCount] = lo;
+            watchHi[watchCount] = hi;
+            watchCount++;
+        }
     }
-    _ram.string = text;
+
+    NSMutableString *text = [NSMutableString stringWithString:@"      0  1  2  3  4  5  6  7   8  9  A  B  C  D  E  F\n"];
+    NSMutableArray<NSValue *> *marks = [NSMutableArray array];          /* the highlighted bytes' cells */
+    NSMutableArray<NSValue *> *watchMarks = [NSMutableArray array];     /* the watched ones */
+    for (int row = 0; row < MEM_ROWS; row++) {
+        const int base = _memBase + row * 16;
+        [text appendFormat:@"%04X  ", base];
+        for (int pass = 0; pass < 2; pass++) {
+            for (int col = 0; col < 16; col++) {
+                const int addr = base + col;
+                if (pass == 0 && col == 8) [text appendString:@" "];
+                NSMutableArray<NSValue *> *target = nil;
+                if (_memHl && addr >= _memHlLo && addr <= _memHlHi) {
+                    target = marks;
+                } else {
+                    for (int w = 0; w < watchCount; w++)
+                        if (addr >= watchLo[w] && addr <= watchHi[w]) { target = watchMarks; break; }
+                }
+                const uint8_t byte = data[row * 16 + col];
+                if (target) [target addObject:[NSValue valueWithRange:NSMakeRange(text.length, pass == 0 ? 2 : 1)]];
+                if (pass == 0) [text appendFormat:@"%02X ", byte];
+                else [text appendFormat:@"%c", (byte >= 0x20 && byte < 0x7F) ? (char)byte : '.'];
+            }
+            if (pass == 0) [text appendString:@" "];
+        }
+        char region[64];
+        region[0] = '\0';
+        a2600mem_region_name(regions, regionCount, (uint16_t)base, region, (int)sizeof region);
+        [text appendFormat:@"  %s\n", region];
+    }
+    NSMutableAttributedString *styled = [[NSMutableAttributedString alloc] initWithString:text attributes:monoAttrs()];
+    for (NSValue *value in watchMarks)
+        [styled addAttribute:NSBackgroundColorAttributeName value:NSColor.selectedTextBackgroundColor
+                       range:value.rangeValue];
+    for (NSValue *value in marks) [styled addAttributes:accentAttrs() range:value.rangeValue];
+    setStyledText(_mem, styled);
 }
 
 - (void)refreshDisasm
 {
     static a2600debug_line lines[DISASM_WINDOW];
     int total = 0, pcLine = -1;
+    /* the listing's length and the PC's line first, then the page asked for */
     a2600debug_disassemble(_dbg, _disasmBank, 0, lines, 1, &total, &pcLine);
     if (_followPc.state == NSControlStateValueOn && pcLine >= 0)
-        _disasmFirst = pcLine > DISASM_WINDOW / 3 ? pcLine - DISASM_WINDOW / 3 : 0;
+        _disasmFirst = pcLine > DISASM_WINDOW / 3 ? pcLine - DISASM_WINDOW / 3 : 0;    /* the PC a third of the way down */
     if (_disasmFirst > total - 1) _disasmFirst = total > 0 ? total - 1 : 0;
     if (_disasmFirst < 0) _disasmFirst = 0;
-    const int n = a2600debug_disassemble(_dbg, _disasmBank, _disasmFirst, lines, DISASM_WINDOW, &total, &pcLine);
+    int n = a2600debug_disassemble(_dbg, _disasmBank, _disasmFirst, lines, DISASM_WINDOW, &total, &pcLine);
+    if (n < 0) n = 0;
+    if (n > DISASM_WINDOW) n = DISASM_WINDOW;
     _lineCount = n;
+
+    /* "●> F00B  20 20 F0  LABEL            JSR $F020              6": the
+     * ranges are the line and its label, for the colours */
     NSMutableString *text = [NSMutableString string];
-    int pcRow = -1;
-    NSUInteger pcStart = 0, pcLen = 0;
+    NSRange ranges[DISASM_WINDOW], labels[DISASM_WINDOW];
     for (int i = 0; i < n; i++) {
         _lineAddr[i] = lines[i].address;
-        NSString *line = [NSString stringWithFormat:@"%c%c %04X  %-10s %-14s %-22s %s\n",
-                          lines[i].has_breakpoint ? '*' : ' ', lines[i].is_pc ? '>' : ' ',
-                          lines[i].address, lines[i].bytes, lines[i].label, lines[i].disasm, lines[i].cycles];
-        if (lines[i].is_pc) { pcRow = i; pcStart = text.length; pcLen = line.length - 1; }
+        /* a red dot for a breakpoint, a grey ring for a disabled one */
+        NSString *gutter = lines[i].has_breakpoint ? @"●" : (lines[i].bp_disabled ? @"○" : @" ");
+        NSString *label = cstr(lines[i].label);
+        NSMutableString *line = [NSMutableString stringWithFormat:@"%@%c %04X  ", gutter,
+                                 lines[i].is_pc ? '>' : ' ', lines[i].address];
+        [line appendString:padTo(cstr(lines[i].bytes), 9)];
+        [line appendString:@"  "];
+        labels[i] = NSMakeRange(text.length + line.length, label.length);
+        [line appendString:padTo(label, 16)];
+        [line appendString:@" "];
+        [line appendString:padTo(cstr(lines[i].disasm), 22)];
+        [line appendString:@" "];
+        [line appendString:cstr(lines[i].cycles)];
+        ranges[i] = NSMakeRange(text.length, line.length);
         [text appendString:line];
+        [text appendString:@"\n"];
     }
     if (n == 0) [text appendString:@"(no disassembly)\n"];
-    _disasm.string = text;
-    if (pcRow >= 0) {
-        [_disasm.textStorage addAttributes:@{ NSBackgroundColorAttributeName: A2600AccentColor(),
-                                              NSForegroundColorAttributeName: NSColor.blackColor }
-                                     range:NSMakeRange(pcStart, pcLen)];
+
+    NSMutableAttributedString *styled = [[NSMutableAttributedString alloc] initWithString:text attributes:monoAttrs()];
+    for (int i = 0; i < n; i++) {
+        /* labels grey */
+        if (labels[i].length)
+            [styled addAttribute:NSForegroundColorAttributeName value:NSColor.systemGrayColor range:labels[i]];
+        /* the gutter: a breakpoint red, a disabled one grey */
+        if (lines[i].has_breakpoint || lines[i].bp_disabled)
+            [styled addAttribute:NSForegroundColorAttributeName
+                           value:lines[i].has_breakpoint ? breakpointRed() : NSColor.systemGrayColor
+                           range:NSMakeRange(ranges[i].location, 1)];
     }
+    /* the PC's line in the accent colour with dark ink, last so its colours win */
+    for (int i = 0; i < n; i++)
+        if (lines[i].is_pc) [styled addAttributes:accentAttrs() range:ranges[i]];
+    [_disasm.textStorage setAttributedString:styled];
+    NSScrollView *scroll = _disasm.enclosingScrollView;
+    [scroll.contentView scrollToPoint:NSMakePoint(scroll.contentView.bounds.origin.x, 0)];
+    [scroll reflectScrolledClipView:scroll.contentView];
 }
 
-- (void)refreshTia
+/* The Video tab: the controller says what changed. Forced when the tab
+ * has just come on show. */
+- (void)refreshVideo
 {
-    a2600debug_tia t;
-    a2600debug_tia_get(_dbg, &t);
-    static const char *const coll[15] = { "M0-P1", "M0-P0", "M1-P0", "M1-P1", "P0-PF", "P0-BL", "P1-PF",
-        "P1-BL", "M0-PF", "M0-BL", "M1-PF", "M1-BL", "BL-PF", "P0-P1", "M0-M1" };
-    NSMutableString *s = [NSMutableString string];
-    [s appendFormat:@"Frame %d   scanline %d (last frame %d)   frame cycles %d (WSYNC %d)\n",
-        t.frame_count, t.scanlines, t.scanlines_last, t.frame_cycles, t.wsync_cycles];
-    [s appendFormat:@"clocks this line %d   cycles this line %d   beam %d,%d\nVSYNC %d   VBLANK %d\n\n",
-        t.clocks_this_line, t.cycles_this_line, t.beam_x, t.beam_y, t.vsync, t.vblank];
-    [s appendFormat:@"Colours   COLUP0 %02X   COLUP1 %02X   COLUPF %02X   COLUBK %02X\n", t.colup0, t.colup1, t.colupf, t.colubk];
-    [s appendFormat:@"Players   GRP0 %02X  GRP1 %02X   NUSIZ0 %02X  NUSIZ1 %02X   REFP0 %d  REFP1 %d   VDELP0 %d  VDELP1 %d\n",
-        t.graphics_p0, t.graphics_p1, t.nusiz0, t.nusiz1, t.refp0, t.refp1, t.vdelp0, t.vdelp1];
-    [s appendFormat:@"Missiles  ENAM0 %d  ENAM1 %d   RESMP0 %d  RESMP1 %d\nBall      ENABL %d   VDELBL %d\n",
-        t.enam0, t.enam1, t.resmp0, t.resmp1, t.enabl, t.vdelbl];
-    [s appendFormat:@"Playfield PF0 %02X  PF1 %02X  PF2 %02X   CTRLPF %02X   REF %d  SCORE %d  PRIORITY %d\n\n",
-        t.pf0, t.pf1, t.pf2, t.ctrlpf, t.refpf, t.scorepf, t.pripf];
-    [s appendFormat:@"Positions      P0 %3d   P1 %3d   M0 %3d   M1 %3d   BL %3d\n", t.pos_p0, t.pos_p1, t.pos_m0, t.pos_m1, t.pos_bl];
-    [s appendFormat:@"Motion (HM)    P0 %02X    P1 %02X    M0 %02X    M1 %02X    BL %02X\n\n", t.hm_p0, t.hm_p1, t.hm_m0, t.hm_m1, t.hm_bl];
-    [s appendFormat:@"Audio     AUDC0 %02X  AUDF0 %02X  AUDV0 %02X  (%s)\n          AUDC1 %02X  AUDF1 %02X  AUDV1 %02X  (%s)\n\nCollisions:",
-        t.audc0, t.audf0, t.audv0, t.aud_freq0, t.audc1, t.audf1, t.audv1, t.aud_freq1];
-    BOOL any = NO;
-    for (int i = 0; i < 15; i++) if (t.collisions & (1u << i)) { [s appendFormat:@" %s", coll[i]]; any = YES; }
-    if (!any) [s appendString:@" none"];
-    [s appendString:@"\n\nSet a register: name and value below (colup0, pf1, posp0, refp0, vsync ...); "
-                     "strobes: wsync rsync resp0 resp1 resm0 resm1 resbl hmove hmclr cxclr\n"];
-    _tiaText.string = s;
-
-    const int h = a2600debug_frame_snapshot(_dbg, _tiaPx, _tiaPartial.state == NSControlStateValueOn);
-    if (h > 0) {
-        CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
-        CFDataRef data = CFDataCreate(NULL, (const UInt8 *)_tiaPx, (CFIndex)A2600SESSION_FB_WIDTH * h * 4);
-        CGDataProviderRef provider = CGDataProviderCreateWithCFData(data);
-        CGImageRef img = CGImageCreate(A2600SESSION_FB_WIDTH, h, 8, 32, A2600SESSION_FB_WIDTH * 4, space,
-                                       kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little, provider,
-                                       NULL, false, kCGRenderingIntentDefault);
-        CGDataProviderRelease(provider);
-        CFRelease(data);
-        CGColorSpaceRelease(space);
-        _tiaPic.image = img;   /* the view owns it now */
-    }
-}
-
-- (void)refreshRiot
-{
-    a2600debug_riot r;
-    a2600debug_riot_get(_dbg, &r);
-    NSMutableString *s = [NSMutableString string];
-    [s appendFormat:@"SWCHA  %02X   SWACNT %02X     left: %s   right: %s\nSWCHB  %02X   SWBCNT %02X\nINPT0-5  ",
-        r.swcha, r.swacnt, r.dir_left, r.dir_right, r.swchb, r.swbcnt];
-    for (int i = 0; i < 6; i++) [s appendFormat:@"%02X ", r.inpt[i]];
-    [s appendFormat:@"\n\nTimer  INTIM %02X   TIMINT %02X   clocks %d   divider %d\n\n", r.intim, r.timint, r.tim_clocks, r.tim_divider];
-    [s appendFormat:@"Switches   Select %s   Reset %s   %s   Left difficulty %s   Right difficulty %s\n\n",
-        r.select ? "pressed" : "up", r.reset ? "pressed" : "up", r.color ? "Color" : "B&W",
-        r.diff_left_a ? "A" : "B", r.diff_right_a ? "A" : "B"];
-    [s appendString:@"The switches can be flipped from the menu, the keypad window or the prompt (swchb $xx); "
-                     "the ports with joy0up, joy0fire ..."];
-    _riot.string = s;
+    [_video refreshForce:!_videoShown];
+    _videoShown = YES;
 }
 
 - (void)refreshBps
 {
-    uint32_t bps[64];
-    static char out[8192];
-    const int n = a2600debug_breakpoint_list(_dbg, bps, 64);
-    NSMutableString *s = [NSMutableString stringWithFormat:@"Breakpoints (%d):\n", n];
-    for (int i = 0; i < n; i++) {
-        const unsigned bank = bps[i] >> 16;
-        if (bank == A2600DEBUG_ANY_BANK) [s appendFormat:@"  $%04X  any bank\n", bps[i] & 0xffff];
-        else [s appendFormat:@"  $%04X  bank %u\n", bps[i] & 0xffff, bank];
+    static a2600debug_breakpoint bps[MAX_BPS];
+    int n = a2600debug_bp_list(_dbg, bps, MAX_BPS);
+    if (n < 0) n = 0;
+    if (n > MAX_BPS) n = MAX_BPS;
+
+    /* the first line: why it stopped, or that it runs */
+    {
+        char reason[160];
+        int where = -1;
+        reason[0] = '\0';
+        a2600debug_stop_reason(_dbg, reason, (int)sizeof reason, &where);
+        NSString *why = cstr(reason);
+        _bpStop.stringValue = a2600debug_is_stopped(_dbg)
+            ? [NSString stringWithFormat:@"Stopped: %@", why.length ? why : @"stopped"]
+            : @"Running.";
     }
-    a2600debug_command(_dbg, "listTraps", out, sizeof out);
-    [s appendFormat:@"\nTraps:\n%@\n", stripControl(out)];
-    a2600debug_command(_dbg, "listBreaks", out, sizeof out);
-    [s appendFormat:@"\nConditional (breakIf):\n%@\n", stripControl(out)];
-    _bps.string = s;
+
+    /* the rows are rebuilt only when something in them changed (a refresh
+     * must not eat a click) */
+    NSMutableString *signature = [NSMutableString string];
+    NSMutableArray<NSString *> *descriptions = [NSMutableArray array];
+    for (int i = 0; i < n; i++) {
+        char desc[256];
+        desc[0] = '\0';
+        a2600bp_describe(_dbg, &bps[i], desc, (int)sizeof desc);
+        [descriptions addObject:cstr(desc)];
+        [signature appendFormat:@"%d %d %u %@\n", bps[i].id, bps[i].enabled, bps[i].hits, descriptions[(NSUInteger)i]];
+    }
+    if ([signature isEqualToString:_bpSig]) return;
+    _bpSig = signature;
+
+    for (NSView *v in [_bpList.arrangedSubviews copy]) [_bpList removeView:v];
+    if (n == 0) [_bpList addArrangedSubview:[self label:@"No breakpoints"]];
+    for (int i = 0; i < n; i++) {
+        NSButton *box = [NSButton checkboxWithTitle:[NSString stringWithFormat:@"#%d", bps[i].id]
+                                             target:self action:@selector(bpEnabled:)];
+        box.state = bps[i].enabled ? NSControlStateValueOn : NSControlStateValueOff;
+        box.tag = bps[i].id;
+        box.font = monoFont();
+        [box.widthAnchor constraintEqualToConstant:70].active = YES;
+        NSButton *remove = [self button:@"Remove" action:@selector(bpRemove:)];
+        remove.tag = bps[i].id;
+        [remove.widthAnchor constraintEqualToConstant:70].active = YES;
+        NSStackView *row = hstack(@[box, tableCell(descriptions[(NSUInteger)i], 0, NO),
+                                    tableCell([NSString stringWithFormat:@"%u", bps[i].hits], 60, NO), remove]);
+        row.distribution = NSStackViewDistributionFill;
+        [_bpList addArrangedSubview:row];
+        [row.widthAnchor constraintEqualToAnchor:_bpList.widthAnchor].active = YES;
+    }
 }
 
+- (void)refreshWatches
+{
+    const int n = a2600watch_count();
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    NSMutableString *signature = [NSMutableString string];
+    for (int i = 0; i < n; i++) {
+        char buf[256];
+        buf[0] = '\0';
+        a2600watch_format(_dbg, i, buf, (int)sizeof buf);
+        [lines addObject:cstr(buf)];
+        [signature appendFormat:@"%@\n", lines[(NSUInteger)i]];
+    }
+    [signature appendFormat:@"%u", a2600watch_generation()];
+    if ([signature isEqualToString:_wtSig]) return;      /* a refresh must not eat a click */
+    _wtSig = signature;
+
+    for (NSView *v in [_wtList.arrangedSubviews copy]) [_wtList removeView:v];
+    if (n == 0) [_wtList addArrangedSubview:[self label:@"No watches"]];
+    for (int i = 0; i < n; i++) {
+        NSButton *mem = [self button:@"Show in Memory" action:@selector(wtMemory:)];
+        mem.tag = i;
+        NSButton *brk = [self button:@"Break on Change" action:@selector(wtBreak:)];
+        brk.tag = i;
+        NSButton *remove = [self button:@"Remove" action:@selector(wtRemove:)];
+        remove.tag = i;
+        NSStackView *row = hstack(@[tableCell(lines[(NSUInteger)i], 0, NO), mem, brk, remove]);
+        row.distribution = NSStackViewDistributionFill;
+        [_wtList addArrangedSubview:row];
+        [row.widthAnchor constraintEqualToAnchor:_wtList.widthAnchor].active = YES;
+    }
+}
+
+/* The cartridge, the memory map (the page table as it maps now), the RIOT
+ * (ports, timer, console switches) and the TIA's registers. */
+- (void)refreshCart
+{
+    static a2600debug_region regions[MAX_REGIONS];
+    static const char *const collisionNames[15] = { "M0-P1", "M0-P0", "M1-P0", "M1-P1", "P0-PF", "P0-BL", "P1-PF",
+                                                    "P1-BL", "M0-PF", "M0-BL", "M1-PF", "M1-BL", "BL-PF", "P0-P1",
+                                                    "M0-M1" };
+    char info[256];
+    info[0] = '\0';
+    a2600debug_cart_info(_dbg, info, (int)sizeof info);
+    NSMutableString *s = [NSMutableString stringWithFormat:@"Cartridge  %@\n", cstr(info)];
+
+    [s appendString:@"\nMemory map ($0000-$1FFF, as the page table maps it now)\n"];
+    int regionCount = a2600debug_memory_map(_dbg, regions, MAX_REGIONS);
+    if (regionCount < 0) regionCount = 0;
+    if (regionCount > MAX_REGIONS) regionCount = MAX_REGIONS;
+    if (regionCount == 0) [s appendString:@"  (not available)\n"];
+    for (int i = 0; i < regionCount; i++)
+        [s appendFormat:@"  %04X-%04X  %c%c  %@\n", regions[i].lo, regions[i].hi, regions[i].readable ? 'r' : '-',
+                        regions[i].writable ? 'w' : '-', cstr(regions[i].name)];
+
+    a2600debug_riot r;
+    memset(&r, 0, sizeof r);
+    a2600debug_riot_get(_dbg, &r);
+    [s appendString:@"\nRIOT\n"];
+    [s appendFormat:@"SWCHA  %02X   SWACNT %02X     left: %@   right: %@\nSWCHB  %02X   SWBCNT %02X\nINPT0-5  ",
+        r.swcha, r.swacnt, cstr(r.dir_left), cstr(r.dir_right), r.swchb, r.swbcnt];
+    for (int i = 0; i < 6; i++) [s appendFormat:@"%02X ", r.inpt[i]];
+    [s appendFormat:@"\nTimer  INTIM %02X   TIMINT %02X   clocks %d   divider %d\n", r.intim, r.timint, r.tim_clocks,
+                    r.tim_divider];
+    [s appendFormat:@"Switches   Select %s   Reset %s   %s   Left difficulty %s   Right difficulty %s\n",
+        r.select ? "pressed" : "up", r.reset ? "pressed" : "up", r.color ? "Color" : "B&W",
+        r.diff_left_a ? "A" : "B", r.diff_right_a ? "A" : "B"];
+    [s appendString:@"The switches can be flipped from the menu, the keypad window or the console (swchb $xx); "
+                     "the ports with joy0up, joy0fire ...\n"];
+
+    a2600debug_tia t;
+    memset(&t, 0, sizeof t);
+    a2600debug_tia_get(_dbg, &t);
+    [s appendString:@"\nTIA\n"];
+    [s appendFormat:@"Frame %d   scanline %d (last frame %d)   frame cycles %d (WSYNC %d)\n", t.frame_count, t.scanlines,
+                    t.scanlines_last, t.frame_cycles, t.wsync_cycles];
+    [s appendFormat:@"clocks this line %d   cycles this line %d   beam %d,%d   VSYNC %d   VBLANK %d\n",
+                    t.clocks_this_line, t.cycles_this_line, t.beam_x, t.beam_y, t.vsync, t.vblank];
+    [s appendFormat:@"Colours   COLUP0 %02X   COLUP1 %02X   COLUPF %02X   COLUBK %02X\n", t.colup0, t.colup1, t.colupf,
+                    t.colubk];
+    [s appendFormat:@"Players   GRP0 %02X  GRP1 %02X   NUSIZ0 %02X  NUSIZ1 %02X   REFP0 %d  REFP1 %d   VDELP0 %d  VDELP1 %d\n",
+                    t.graphics_p0, t.graphics_p1, t.nusiz0, t.nusiz1, t.refp0, t.refp1, t.vdelp0, t.vdelp1];
+    [s appendFormat:@"Missiles  ENAM0 %d  ENAM1 %d   RESMP0 %d  RESMP1 %d     Ball  ENABL %d   VDELBL %d\n", t.enam0,
+                    t.enam1, t.resmp0, t.resmp1, t.enabl, t.vdelbl];
+    [s appendFormat:@"Playfield PF0 %02X  PF1 %02X  PF2 %02X   CTRLPF %02X   REF %d  SCORE %d  PRIORITY %d\n", t.pf0,
+                    t.pf1, t.pf2, t.ctrlpf, t.refpf, t.scorepf, t.pripf];
+    [s appendFormat:@"Positions      P0 %3d   P1 %3d   M0 %3d   M1 %3d   BL %3d\n", t.pos_p0, t.pos_p1, t.pos_m0,
+                    t.pos_m1, t.pos_bl];
+    [s appendFormat:@"Motion (HM)    P0 %02X    P1 %02X    M0 %02X    M1 %02X    BL %02X\n", t.hm_p0, t.hm_p1, t.hm_m0,
+                    t.hm_m1, t.hm_bl];
+    [s appendString:@"Collisions:"];
+    BOOL any = NO;
+    for (int i = 0; i < 15; i++)
+        if (t.collisions & (1u << i)) {
+            [s appendFormat:@" %s", collisionNames[i]];
+            any = YES;
+        }
+    if (!any) [s appendString:@" none"];
+    [s appendString:@"\n"];
+    setText(_cartText, s, NO);
+}
+
+/* The TIA's two sound channels, with Stella's frequency text. */
+- (void)refreshSound
+{
+    a2600debug_sound snd;
+    memset(&snd, 0, sizeof snd);
+    a2600debug_sound_get(_dbg, &snd);
+    NSMutableString *s = [NSMutableString stringWithString:@"TIA (two channels; volume 0 is off, 15 loudest)\n"];
+    for (int ch = 0; ch < 2; ch++)
+        [s appendFormat:@"  Channel %d   AUDC $%02X   AUDF $%02X   AUDV $%02X   %@\n", ch, snd.audc[ch], snd.audf[ch],
+                        snd.audv[ch], cstr(snd.freq[ch])];
+    setText(_soundText, s, NO);
+}
+
+/* The symbol table, filtered: "AAAA  name", ordered by address.
+ * The table's own order is unstable, so it is asked again each time. */
+- (void)refreshSymbols
+{
+    const int total = a2600debug_symbols_count(_dbg);
+    NSString *filter = [_symFilter.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    int *indices = total > 0 ? malloc((size_t)total * sizeof *indices) : NULL;
+    int shown = 0;
+    if (indices) shown = a2600debug_symbols_filter(_dbg, filter.UTF8String, indices, total);
+    if (shown < 0) shown = 0;
+    NSMutableString *text = [NSMutableString string];
+    [_symAddrs removeAllObjects];
+    for (int i = 0; i < shown; i++) {
+        uint16_t address = 0;
+        char name[96];
+        name[0] = '\0';
+        if (!a2600debug_symbols_get(_dbg, indices[i], &address, name, (int)sizeof name)) continue;
+        [text appendFormat:@"%04X  %@\n", address, cstr(name)];
+        [_symAddrs addObject:@(address)];
+    }
+    free(indices);
+    if (_symAddrs.count == 0) [text appendString:@"(no symbols)\n"];
+    NSScrollView *scroll = _symList.enclosingScrollView;
+    const NSPoint at = scroll ? scroll.contentView.bounds.origin : NSZeroPoint;
+    if (![_symList.string isEqualToString:text]) {
+        _symList.string = text;
+        if (scroll) {
+            [scroll.contentView scrollToPoint:at];
+            [scroll reflectScrolledClipView:scroll.contentView];
+        }
+    }
+    _symCount.stringValue = [NSString stringWithFormat:@"%lu of %d symbols%@", (unsigned long)_symAddrs.count, total,
+                                                       filter.length ? @" (filtered)" : @""];
+}
+
+/* Trace (idx 0) and History (idx 1): the newest HIST_SHOWN lines of the
+ * engine's ring that pass the filter, oldest first. */
+- (void)refreshHist:(int)idx
+{
+    static a2600debug_trace_entry ring[HIST_RING];
+    static int hit[HIST_SHOWN];
+    const BOOL on = a2600debug_trace_enabled(_dbg) != 0;
+    [self syncRecord:on];
+
+    uint16_t lo = 0, hi = 0xFFFF;
+    int filter = A2600DEBUG_TRACE_ALL;
+    BOOL badRange = NO;
+    switch (_hFilter[idx].indexOfSelectedItem) {
+    case 1: filter = A2600DEBUG_TRACE_BRANCHES; break;
+    case 2:
+        if (a2600sym_parse_range(_dbg, _hRange[idx].stringValue.UTF8String, &lo, &hi)) filter = A2600DEBUG_TRACE_RANGE;
+        else badRange = YES;
+        break;
+    default: break;
+    }
+    const int total = a2600debug_trace_count(_dbg);
+    /* newest first: unfiltered, only the lines shown are needed */
+    int n = a2600debug_trace_read(_dbg, ring, filter == A2600DEBUG_TRACE_ALL ? HIST_SHOWN : HIST_RING);
+    if (n < 0) n = 0;
+    int shown = 0;
+    for (int i = 0; i < n && shown < HIST_SHOWN; i++)
+        if (a2600debug_trace_match(&ring[i], filter, lo, hi)) hit[shown++] = i;
+
+    NSMutableString *t = [NSMutableString string];
+    for (int k = shown - 1; k >= 0; k--) {
+        char line[256];
+        line[0] = '\0';
+        a2600debug_trace_format(&ring[hit[k]], line, (int)sizeof line);
+        [t appendString:cstr(line)];
+        [t appendString:@"\n"];
+    }
+    NSString *note;
+    if (!on && total == 0)
+        note = @"recording off";
+    else
+        note = [NSString stringWithFormat:@"%@, %d instructions%@", on ? @"recording" : @"recording off", total,
+                shown < total ? [NSString stringWithFormat:@" (showing %d)", shown] : @""];
+    if (badRange) note = [note stringByAppendingString:@" (range not understood: showing all)"];
+    _hNote[idx].stringValue = note;
+    setText(_hText[idx], t, YES);
+}
+
+/* The packet log is rebuilt only when it changed: a new packet, or a
+ * repeat (which moves the newest serial on). */
 - (void)refreshFujinet:(BOOL)force
 {
-    static a2600_fuji_packet p[TRACE_MAX];
+    static a2600_fuji_packet p[FUJI_PACKETS_MAX];
     static char state[2048];
-    int n = a2600debug_fujinet_trace(_dbg, p, TRACE_MAX);
+    int n = a2600debug_fujinet_trace(_dbg, p, FUJI_PACKETS_MAX);
     if (n < 0) n = 0;
     if (a2600session_fujinet_external(_session)) {
         const int link = a2600session_cart_link_up(_session);
@@ -967,33 +2366,24 @@ static void fill(NSStackView *stack, NSView *view)
     }
     state[0] = '\0';
     a2600debug_fujinet_state(_dbg, state, (int)sizeof state);
-    setText(_fujiState, [NSString stringWithUTF8String:state] ?: @"", NO);
+    setText(_fujiState, cstr(state), NO);
 
     if (!force && n == _fujiCount && (n == 0 || p[n - 1].serial == _fujiLast)) return;
+    const BOOL follow = force || _fujiCount < 0 || atEnd(_fujiText);
     _fujiCount = n;
     _fujiLast = n > 0 ? p[n - 1].serial : 0;
-    const BOOL follow = force || atEnd(_fujiText);
-    NSMutableString *t = [NSMutableString string];
+    NSMutableString *s = [NSMutableString string];
     for (int i = 0; i < n; i++) {
-        if (i) [t appendString:@"\n"];
-        [t appendString:[NSString stringWithUTF8String:p[i].text] ?: @""];
-        [t appendString:@"\n     "];
-        for (int k = 0; k < p[i].nbytes && k < (int)sizeof p[i].data; k++) [t appendFormat:@"%02X ", p[i].data[k]];
-        if (p[i].nbytes > (int)sizeof p[i].data) [t appendString:@"…"];
+        if (i) [s appendString:@"\n"];
+        [s appendString:cstr(p[i].text)];
+        if (p[i].repeat > 1) [s appendFormat:@" ×%u", p[i].repeat];
+        [s appendString:@"\n     "];
+        for (int k = 0; k < p[i].nbytes && k < (int)sizeof p[i].data; k++)
+            [s appendFormat:@"%02X ", p[i].data[k]];
+        if (p[i].nbytes > (int)sizeof p[i].data) [s appendString:@"…"];
     }
-    if (n == 0) [t appendString:@"(no FujiBus packets since the trace was cleared)"];
-    setText(_fujiText, t, follow);
+    if (n == 0) [s appendString:@"(no FujiBus packets since the trace was cleared)"];
+    setText(_fujiText, s, follow);
 }
 
-- (void)refreshAll
-{
-    [self refreshStatus];
-    [self refreshCpu];
-    [self refreshRam];
-    [self refreshDisasm];
-    [self refreshTia];
-    [self refreshRiot];
-    [self refreshBps];
-    [self refreshFujinet:NO];
-}
 @end

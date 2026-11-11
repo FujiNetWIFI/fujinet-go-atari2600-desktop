@@ -25,6 +25,7 @@ add_executable(fujinet-go-atari2600-macos MACOSX_BUNDLE
   help/HelpWindow.m
   keypad/KeypadWindow.m
   debugger/DebuggerWindow.m
+  debugger/VideoTab.m
   "${A2600_ICNS}"
 )
 set_source_files_properties("${A2600_ICNS}" PROPERTIES
