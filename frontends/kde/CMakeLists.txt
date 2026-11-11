@@ -28,6 +28,7 @@ add_executable(fujinet-go-atari2600-kde
   help/HelpWindow.cpp
   keypad/KeypadWindow.cpp
   debugger/DebuggerWindow.cpp
+  debugger/VideoTab.cpp
 )
 target_link_libraries(fujinet-go-atari2600-kde PRIVATE a2600_session Qt6::Widgets Qt6::GuiPrivate)
 # The display's shaders, baked for every backend and embedded as resources.
@@ -65,6 +66,34 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/online.fujinet.go.atari2600.kde.deskto
         DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/online.fujinet.go.atari2600.kde.metainfo.xml
         DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
+
+# The Debugger window (and F12 from the main window), on the offscreen
+# platform, against a running session whose RAM holds a hand-assembled loop.
+find_package(Qt6 COMPONENTS Test QUIET)
+if(Qt6Test_FOUND)
+  add_executable(debugger_test debugger_test.cpp debugger/DebuggerWindow.cpp
+                 debugger/VideoTab.cpp
+                 MainWindow.cpp DisplayWidget.cpp SoftDisplayWidget.cpp
+                 FrameFeed.cpp SettingsDialog.cpp KeyForward.cpp
+                 FujiNetWindows.cpp help/HelpWindow.cpp keypad/KeypadWindow.cpp)
+  set_target_properties(debugger_test PROPERTIES CXX_STANDARD 17)
+  target_link_libraries(debugger_test PRIVATE a2600_session Qt6::Widgets
+                        Qt6::GuiPrivate Qt6::Test)
+  qt_add_shaders(debugger_test "display_shaders_test"
+    PREFIX "/"
+    FILES shaders/display.vert shaders/display.frag)
+  target_include_directories(debugger_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_compile_options(debugger_test PRIVATE -Wall -Wextra)
+  target_compile_definitions(debugger_test PRIVATE
+    A2600_SOURCE_ICON_DIR="${CMAKE_SOURCE_DIR}/data/icons")
+  if(WITH_WEBVIEW AND Qt6WebEngineWidgets_FOUND)
+    target_link_libraries(debugger_test PRIVATE Qt6::WebEngineWidgets)
+    target_compile_definitions(debugger_test PRIVATE HAVE_WEBENGINE=1)
+  endif()
+  add_test(NAME debugger_kde COMMAND debugger_test)
+  set_tests_properties(debugger_kde PROPERTIES
+                       ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif()
 
 find_program(DESKTOP_FILE_VALIDATE desktop-file-validate)
 if(DESKTOP_FILE_VALIDATE)
