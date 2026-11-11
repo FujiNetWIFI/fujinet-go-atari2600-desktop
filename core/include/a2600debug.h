@@ -17,6 +17,8 @@
 
 #include <stdint.h>
 
+#include "a2600srcmap.h"
+
 #include "a2600session.h"
 
 #ifdef __cplusplus
@@ -82,6 +84,13 @@ int  a2600debug_line_break_state(a2600debug *d, int file, int line);
 /* Load a dasm symbol file (X.bas.sym) from any path, replacing the user
  * labels. Returns the labels added, or -1 (msg says why). */
 int  a2600debug_load_symbols_path(a2600debug *d, const char *path, char *msg, int msgsz);
+/* Import a .bas file or folder into a2600srcmap_shared() and load the .sym
+ * found beside its listing (0 = ok). */
+int  a2600debug_basic_import(a2600debug *d, const char *path, a2600srcmap_import_result *out);
+/* If the loaded cartridge has its source beside it (X.bas.bin + X.bas, or
+ * X.bin/X.a26 + X.bas), import it, once per cartridge path; cheap to call on
+ * every refresh. Returns 1 when it imported just now. */
+int  a2600debug_basic_auto_import(a2600debug *d, a2600srcmap_import_result *out);
 
 /* ---- CPU --------------------------------------------------------------------- */
 typedef struct {

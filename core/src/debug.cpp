@@ -107,6 +107,7 @@ struct a2600debug
   int lineMode{0};                // 1 into, 2 over, 3 out
   int lineSp{0};
   uInt64 lineCycles{0};           // the instruction we are leaving
+  std::string autoCart;           // the cart path a BASIC auto-import last looked at
 };
 
 namespace {
@@ -1039,6 +1040,46 @@ extern "C" int a2600debug_load_symbols_path(a2600debug* d, const char* path, cha
   ++d->generation;
   put(msg, msgsz, n < 0 ? "no console" : std::to_string(n) + " labels from " + path);
   return n;
+}
+
+// Import a .bas file or folder into the shared map and load the .sym beside
+// its listing. 0 = ok (see a2600srcmap_import).
+extern "C" int a2600debug_basic_import(a2600debug* d, const char* path, a2600srcmap_import_result* out)
+{
+  a2600srcmap_import_result local;
+  if(!out) out = &local;
+  const int rc = a2600srcmap_import(a2600srcmap_shared(), path, out);
+  if(rc == 0 && d && out->sym_path[0])
+    a2600debug_load_symbols_path(d, out->sym_path, nullptr, 0);
+  return rc;
+}
+
+// When the loaded cartridge has its source beside it (X.bas.bin with X.bas, or
+// X.bin / X.a26 with X.bas) and that cartridge has not been looked at yet,
+// import it. Cheap to call on every refresh; 1 = imported just now.
+extern "C" int a2600debug_basic_auto_import(a2600debug* d, a2600srcmap_import_result* out)
+{
+  if(!d) return 0;
+  const char* cart = a2600session_cart_path(d->session);
+  const std::string path = cart ? cart : "";
+  if(path == d->autoCart) return 0;
+  d->autoCart = path;
+  if(path.empty()) return 0;
+  std::vector<std::string> tries;
+  const size_t dot = path.find_last_of('.');
+  if(dot != std::string::npos)
+  {
+    const std::string stem = path.substr(0, dot);
+    if(stem.size() > 4 && stem.compare(stem.size() - 4, 4, ".bas") == 0) tries.push_back(stem);
+    tries.push_back(stem + ".bas");
+  }
+  for(const auto& cand : tries)
+    if(FILE* f = fopen(cand.c_str(), "r"))
+    {
+      fclose(f);
+      return a2600debug_basic_import(d, cand.c_str(), out) == 0 ? 1 : 0;
+    }
+  return 0;
 }
 
 // ---- CPU -----------------------------------------------------------------------
