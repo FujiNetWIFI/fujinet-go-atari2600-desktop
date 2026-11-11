@@ -34,6 +34,13 @@ family (`fujinet-go-adam-desktop`, `-apple2-`, `-coco-`, `-msx-`, `-intv-`,
   between the 2600 and FujiNet, both ways, with hex; always recording,
   even before the debugger opens). Stepping: Step, Trace, Scan+1,
   Frame+1, Rewind, Unwind, Run To.
+- **Debug batari Basic by source.** The debugger's BASIC tab imports a `.bas`
+  file or folder, finds the `.lst` and `.sym` that `2600basic.sh` writes beside
+  it (a cartridge with its `.bas` next to it imports itself), and shows the
+  source with a red dot on every breakpoint and the running line highlighted.
+  Click a line to toggle a breakpoint; Step, Step Over and Step Out go by
+  BASIC line while the tab shows. Capture hooks: `A2600_BASIC_IMPORT=<path>`
+  and `A2600_BASIC_BREAK=name.bas:line` (with `A2600_DEBUGGER_TAB=BASIC`).
 - **Built-in Help.** **Help ▸ FujiNet Go Atari 2600 Help** (Ctrl+Shift+H,
   ⌘? on a Mac) opens a searchable Help, and the Help buttons in Preferences,
   the Keypads window, the debugger and the console log open the topic for what

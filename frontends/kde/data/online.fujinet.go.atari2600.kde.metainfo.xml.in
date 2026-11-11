@@ -44,8 +44,8 @@
       <image>https://raw.githubusercontent.com/FujiNetWIFI/fujinet-go-atari2600-desktop/v0.3.1/data/screenshots/kde/1_running_config.png</image>
     </screenshot>
     <screenshot>
-      <caption>The built-in debugger: the Video tab shows what drew each pixel</caption>
-      <image>https://raw.githubusercontent.com/FujiNetWIFI/fujinet-go-atari2600-desktop/v0.7.0/data/screenshots/kde/2_debugger.png</image>
+      <caption>The built-in debugger: the BASIC tab steps a batari Basic program by source line</caption>
+      <image>https://raw.githubusercontent.com/FujiNetWIFI/fujinet-go-atari2600-desktop/v0.8.0/data/screenshots/kde/2_debugger.png</image>
     </screenshot>
     <screenshot>
       <caption>Both keypad controllers</caption>
@@ -56,7 +56,17 @@
     <!-- The CURRENT release templates its version from @PROJECT_VERSION@, so
          it cannot disagree with the tree; past releases are literal. The
          release job checks that this first entry is still a template. -->
-    <release version="@PROJECT_VERSION@" date="2026-11-10">
+    <release version="@PROJECT_VERSION@" date="2026-11-11">
+      <description>
+        <p>
+          Debug a batari Basic program by its source. The debugger has a new BASIC tab: import a .bas file or folder (the listing and symbol files batari Basic writes beside it are found for you, and a cartridge with its .bas next to it imports itself), click a line to set a breakpoint, and Step, Step Over and Step Out go by BASIC line while the tab shows. Variables carry their source names in Memory, Watches and the Console. This makes thirteen tabs.
+        </p>
+        <p>
+          Fixed: Atari 2600 dumps with long names, nearly every .a26 on a network host (such as "Action Man - Action Force (Europe).a26"), failed to boot from CONFIG with BOOT FAILED. The CONFIG client now reads the whole file name when you pick a file.
+        </p>
+      </description>
+    </release>
+    <release version="0.7.0" date="2026-11-10">
       <description>
         <p>
           New debugger, the same as the other FujiNet Go desktops: twelve tabs (Console, Disassembly, Memory, Breakpoints, Watches, Cart &amp; I/O, Trace, History, Video, Sound, Symbols, FujiNet) with the registers under all of them, any tab can pop out into its own window. Breakpoints can be switched off and count their hits, read, write and access breakpoints say what was written and what it replaced, and the Memory tab goes to ranges, searches and labels what answers where. Trace and History record every instruction. The Video tab replaces the TIA tab: it records what the TIA was set to on every scan line, so you can see what drew each pixel, where a game changes colours or sprites mid-frame, and stop on a write to a register.
