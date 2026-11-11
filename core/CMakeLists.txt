@@ -168,11 +168,15 @@ set(A2600_SESSION_C_SOURCES
   src/audio_sdl.c
   src/bindings.c
   src/hid_keys.c
+  src/memtools.c
+  src/m6502dasm.c
   src/help.c
+  src/vidtab.c
   "${A2600_HELP_C}")
 set(A2600_SESSION_CXX_SOURCES
   src/session.cpp
   src/debug.cpp
+  src/vidcap.cpp
   src/fuji_trace.cpp)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/gamepad_sdl.c")
   list(APPEND A2600_SESSION_C_SOURCES src/gamepad_sdl.c)

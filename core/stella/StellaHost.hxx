@@ -55,6 +55,8 @@ class OSystem;
 class OSystemFNGO;
 class SoundFNGO;
 class EventHandlerFNGO;
+class TIA;
+struct a2600vid_capture;
 
 class StellaHost
 {
@@ -120,6 +122,18 @@ class StellaHost
     // Feed the UI's frame-clock ticks (CLOCK_MONOTONIC ns). While a steady
     // stream arrives the emulator phase-locks one frame per tick.
     void notifyVsync(Int64 frameTimeNs);
+
+    // ---- the Video tab's capture (a2600vidcap.h; any thread) ------------
+    // Ref-counted. While at least one user is on, the TIA's line and poke
+    // taps record the registers of every visible row and every TIA write,
+    // and each finished frame is kept for captureGet.
+    void captureEnable(bool on);
+    // Copy the newest finished frame into dst when its serial differs from
+    // *serialInOut (updated); true if copied.
+    bool captureGet(a2600vid_capture* dst, uInt64* serialInOut);
+    // The machine as it is right now (a job: between frames, or at once
+    // when stopped); false with no console.
+    bool captureFill(a2600vid_capture* dst);
 
     // ---- audio --------------------------------------------------------
     void fillAudio(float* out, uInt32 frames);
@@ -210,6 +224,19 @@ class StellaHost
     std::mutex myPulseMutex;
     std::vector<std::pair<uInt64, Event::Type>> myPulses;  // release at frame N
     void releasePulses();
+
+    // the Video tab's capture: the taps and myCapCur belong to the Stella
+    // thread; myCapPub (the last finished frame) is read under its mutex
+    struct CapCur;
+    void installCaptureTaps();
+    void captureLine(int row);
+    void capturePoke(uInt8 reg, uInt8 value, uInt8 old, int col, int row);
+    void commitCapture();
+    void buildCapture(a2600vid_capture* dst, bool live);
+    std::atomic<int> myCapUsers{0};
+    std::mutex myCapMutex;
+    std::unique_ptr<a2600vid_capture> myCapPub;
+    std::unique_ptr<CapCur> myCapCur;
 
     // pacing
     std::mutex myVsyncMutex;

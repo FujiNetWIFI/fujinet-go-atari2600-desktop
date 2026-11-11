@@ -51,7 +51,7 @@ find_package(Git QUIET)
 # (with the path-poke / tile-grid blits and FN_BLIT_MULEMAP, which draws the
 # 2600 M.U.L.E. map) and the embedded CONFIG client
 # (src/emucore/fujinet/FujiConfigROM.hxx, fujinet-config f38ed1d).
-set(STELLA_COMMIT "93bced4645879a3c40baf9803cfe2911a9e02e7b")
+set(STELLA_COMMIT "7789c4770eef3b9b95c7cbcbb96e4d1c2dfed501")
 set(STELLA_URL "https://github.com/tschak909/stella")
 
 # fujinet-firmware, fork branch boip-idle-wait-on-nodelay (81f9fdb3c): the old

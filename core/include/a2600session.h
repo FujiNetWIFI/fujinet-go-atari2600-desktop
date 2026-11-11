@@ -48,6 +48,7 @@ extern "C" {
  * held, the Map target, the debugger's current line, the FujiNet status
  * dot) -- and the icon's background. */
 #define A2600SESSION_ACCENT_RGB 0xFFA645
+#define A2600SESSION_ACCENT_DARK_RGB 0x996328
 
 typedef struct a2600session a2600session;
 typedef struct a2600debug a2600debug;

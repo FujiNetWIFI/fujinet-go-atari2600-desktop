@@ -36,6 +36,7 @@ extern "C" {
 
 // debug.cpp
 void a2600debug_note_stop(a2600session* s, const char* msg, int addr);
+void a2600debug_console_replaced(a2600session* s);
 void a2600debug_destroy(a2600session* s);
 void a2600debug_trace_install(a2600session* s);
 
@@ -399,6 +400,7 @@ extern "C" int a2600session_start(a2600session* s, const a2600session_start_opts
     // properties: re-apply the user's controller choice.
     if(auto* os = host_of(s)->osystem())
       apply_port_types(*os, s);
+    a2600debug_console_replaced(s);
   };
   host_of(s)->setCallbacks(cb);
   a2600debug_trace_install(s);

@@ -31,6 +31,7 @@
 #include "OSystem.hxx"
 #include "Sound.hxx"
 #include "TIA.hxx"
+#include "TIADebug.hxx"
 #include "TIASurface.hxx"
 #include "TimerManager.hxx"
 
@@ -40,6 +41,7 @@
 #include "host/SoundFNGO.hxx"
 
 #include "StellaHost.hxx"
+#include "../include/a2600vidcap.h"
 
 namespace {
   using Clock = std::chrono::steady_clock;
@@ -58,6 +60,20 @@ namespace {
   // What Stella's own frontend gets (the main thread); see StellaHost.hxx.
   constexpr size_t EMULATION_THREAD_STACK = 8u << 20;
 }
+
+// What the line and poke taps record (Stella thread only): the registers of
+// the latest drawing of every visible row, and a ring of TIA writes tagged
+// with the frame counter they happened under.
+struct StellaHost::CapCur
+{
+  struct Entry { a2600vid_poke poke; uInt16 tag; };
+  a2600vid_line lines[A2600VID_ROWS];
+  Entry ring[A2600VID_POKES];
+  int head{0}, count{0}, dropped{0};
+  uInt16 rowTag{0};       // the frame counter at the latest row
+  uInt16 pokeTag{0};
+  uInt16 rowPokes{0};     // writes since the last row ended
+};
 
 StellaHost::StellaHost() = default;
 
@@ -318,8 +334,11 @@ void StellaHost::publishFrame()
   Console& console = os.console();
   TIA& tia = console.tia();
 
+  const bool frameEnd = tia.newFramePending();
   tia.renderToFrameBuffer();
   os.frameBuffer().tiaSurface().render();
+  if(frameEnd && myCapUsers.load() > 0)
+    commitCapture();
 
   const FBSurface& surface = os.frameBuffer().tiaSurface().tiaSurface();
   uInt32* pixels = nullptr; uInt32 pitch = 0;
@@ -468,6 +487,7 @@ std::string StellaHost::createConsoleFrom(const std::string& path)
     return err;
   }
   myNextFrameNs = monoNs();
+  installCaptureTaps();
   if(myCallbacks.onConsoleReplaced) myCallbacks.onConsoleReplaced();
   return {};
 }
@@ -540,6 +560,198 @@ void StellaHost::enqueueEvent(Event::Type type, Int32 value)
   if(!myRunning.load() || !myOSystem) return;
   auto* eh = dynamic_cast<EventHandlerFNGO*>(&myOSystem->eventHandler());
   if(eh) eh->enqueue(type, value);
+}
+
+// ---- the Video tab's capture -------------------------------------------
+
+namespace {
+  // The registers of the row that just ended, from the debugger's own TIA
+  // state (what TIADebug shows: positions, delayed copies and all).
+  void fillLine(a2600vid_line& line, TIADebug& tia)
+  {
+    const TiaState& st = static_cast<const TiaState&>(tia.getState());
+    line.valid = 1;
+    line.colup0 = static_cast<uInt8>(st.coluRegs[0]); line.colup1 = static_cast<uInt8>(st.coluRegs[1]);
+    line.colupf = static_cast<uInt8>(st.coluRegs[2]); line.colubk = static_cast<uInt8>(st.coluRegs[3]);
+    line.pf0 = static_cast<uInt8>(st.pf[0]); line.pf1 = static_cast<uInt8>(st.pf[1]);
+    line.pf2 = static_cast<uInt8>(st.pf[2]);
+    line.ctrlpf = tia.ctrlPF();
+    line.grp0 = static_cast<uInt8>(st.gr[0]); line.grp1 = static_cast<uInt8>(st.gr[1]);
+    line.grp0_old = static_cast<uInt8>(st.gr[2]); line.grp1_old = static_cast<uInt8>(st.gr[3]);
+    line.enabl = st.gr[4] != 0; line.enabl_old = st.gr[5] != 0;
+    line.enam0 = st.gr[6] != 0; line.enam1 = st.gr[7] != 0;
+    line.nusiz0 = tia.nusiz0(); line.nusiz1 = tia.nusiz1();
+    line.flags = static_cast<uInt8>((st.ref[0] ? A2600VID_F_REFP0 : 0) | (st.ref[1] ? A2600VID_F_REFP1 : 0) |
+                                    (st.vdel[0] ? A2600VID_F_VDELP0 : 0) | (st.vdel[1] ? A2600VID_F_VDELP1 : 0) |
+                                    (st.vdel[2] ? A2600VID_F_VDELBL : 0) |
+                                    (st.resm[0] ? A2600VID_F_RESMP0 : 0) | (st.resm[1] ? A2600VID_F_RESMP1 : 0) |
+                                    (st.vsb[1] ? A2600VID_F_VBLANK : 0));
+    for(int obj = 0; obj < A2600VID_NOBJ; ++obj)
+    {
+      line.pos[obj] = static_cast<uInt8>(st.pos[static_cast<size_t>(obj)]);
+      line.hmove[obj] = static_cast<uInt8>(st.hm[static_cast<size_t>(obj)]);
+    }
+    line.audf[0] = static_cast<uInt8>(st.aud[0]); line.audf[1] = static_cast<uInt8>(st.aud[1]);
+    line.audc[0] = static_cast<uInt8>(st.aud[2]); line.audc[1] = static_cast<uInt8>(st.aud[3]);
+    line.audv[0] = static_cast<uInt8>(st.aud[4]); line.audv[1] = static_cast<uInt8>(st.aud[5]);
+    line.collisions = 0;
+    for(size_t bit = 0; bit < st.cx.size() && bit < 16; ++bit)
+      if(st.cx[bit]) line.collisions = static_cast<uInt16>(line.collisions | (1u << bit));
+    line.pokes = 0;
+  }
+}
+
+void StellaHost::captureEnable(bool on)
+{
+  if(!myRunning.load()) return;
+  if(on) ++myCapUsers;
+  else if(myCapUsers.load() > 0) --myCapUsers;
+  withStella([this](OSystem&) {
+    {
+      const std::lock_guard<std::mutex> lock(myCapMutex);
+      if(!myCapPub) myCapPub = std::make_unique<a2600vid_capture>();
+    }
+    installCaptureTaps();
+    return 0;
+  });
+}
+
+void StellaHost::installCaptureTaps()
+{
+  if(!myOSystem || !myOSystem->hasConsole()) return;
+  TIA& tia = myOSystem->console().tia();
+  if(myCapUsers.load() > 0)
+  {
+    myCapCur = std::make_unique<CapCur>();
+    tia.setLineTap([this](int row) { captureLine(row); });
+    tia.setPokeTap([this](uInt8 reg, uInt8 value, uInt8 old, int col, int row) {
+      capturePoke(reg, value, old, col, row);
+    });
+  }
+  else
+  {
+    tia.setLineTap(nullptr);
+    tia.setPokeTap(nullptr);
+  }
+}
+
+void StellaHost::captureLine(int row)
+{
+  if(!myCapCur || row < 0 || row >= A2600VID_ROWS || !myOSystem->hasConsole()) return;
+  Console& console = myOSystem->console();
+  uInt32 beamX = 0, beamY = 0;
+  if(!console.tia().electronBeamPos(beamX, beamY)) return;    // not drawing the picture
+  TIADebug& tia = myOSystem->debugger().tiaDebug();
+  a2600vid_line& line = myCapCur->lines[row];
+  fillLine(line, tia);
+  line.pokes = myCapCur->rowPokes;
+  myCapCur->rowPokes = 0;
+  myCapCur->rowTag = static_cast<uInt16>(tia.frameCount());
+}
+
+void StellaHost::capturePoke(uInt8 reg, uInt8 value, uInt8 old, int col, int row)
+{
+  if(!myCapCur || !myOSystem->hasConsole()) return;
+  CapCur& cur = *myCapCur;
+  Console& console = myOSystem->console();
+  uInt32 beamX = 0, beamY = 0;
+  const bool drawing = console.tia().electronBeamPos(beamX, beamY);
+  const uInt16 tag = static_cast<uInt16>(myOSystem->debugger().tiaDebug().frameCount());
+  if(tag != cur.pokeTag) { cur.pokeTag = tag; cur.dropped = 0; }
+  const int slot = (cur.head + cur.count) % A2600VID_POKES;
+  CapCur::Entry& entry = cur.ring[slot];
+  entry.poke.col = static_cast<int16_t>(col);
+  entry.poke.row = static_cast<int16_t>(drawing && row >= 0 && row < A2600VID_ROWS ? row : -1);
+  entry.poke.reg = reg; entry.poke.value = value; entry.poke.old = old; entry.poke.pad = 0;
+  entry.tag = tag;
+  if(cur.count == A2600VID_POKES) { cur.head = (cur.head + 1) % A2600VID_POKES; ++cur.dropped; }
+  else ++cur.count;
+  if(drawing) ++cur.rowPokes;
+}
+
+void StellaHost::commitCapture()
+{
+  if(!myCapCur || !myCapPub || !myOSystem->hasConsole()) return;
+  const std::lock_guard<std::mutex> lock(myCapMutex);
+  buildCapture(myCapPub.get(), false);
+  ++myCapPub->serial;
+}
+
+// The newest frame the row tap saw, as a capture: lines from the taps, the
+// picture the TIA finished last, the writes of the frame the rows belong to.
+// live: also the beam and the registers right now.
+void StellaHost::buildCapture(a2600vid_capture* dst, bool live)
+{
+  OSystem& osys = *myOSystem;
+  TIA& tia = osys.console().tia();
+  TIADebug& tdbg = osys.debugger().tiaDebug();
+  CapCur& cur = *myCapCur;
+  const uInt32 high = std::min<uInt32>(tia.height(), A2600VID_ROWS);
+  const size_t count = static_cast<size_t>(A2600VID_FB_W) * high;
+
+  dst->fb_w = A2600VID_FB_W;
+  dst->fb_h = static_cast<int>(high);
+  dst->vis_top = static_cast<int>(tia.startLine());
+  dst->total_lines = static_cast<int>(tia.scanlinesLastFrame());
+  if(dst->total_lines <= 0) dst->total_lines = 262;
+  dst->pal = tia.frameLayout() == FrameLayout::pal;
+  dst->frame = static_cast<uint64_t>(tdbg.frameCount());
+  dst->wsync_cycles = tdbg.frameWsyncCycles();
+
+  const uInt8* src = tia.frameBuffer();
+  const TIASurface& surface = osys.frameBuffer().tiaSurface();
+  for(size_t pix = 0; pix < count; ++pix)
+  {
+    dst->idx[pix] = src[pix];
+    dst->pixels[pix] = surface.mapIndexedPixel(src[pix]);
+  }
+  std::memcpy(dst->lines, cur.lines, sizeof dst->lines);
+
+  dst->npokes = 0;
+  dst->pokes_dropped = cur.dropped;
+  for(int ent = 0; ent < cur.count; ++ent)
+  {
+    const CapCur::Entry& entry = cur.ring[(cur.head + ent) % A2600VID_POKES];
+    if(entry.tag == cur.rowTag && dst->npokes < A2600VID_POKES)
+      dst->pokes[dst->npokes++] = entry.poke;
+  }
+
+  std::memset(&dst->now, 0, sizeof dst->now);
+  dst->vpos = static_cast<int>(tia.scanlinesLastFrame());
+  dst->hpos = 0;
+  dst->beam_row = dst->fb_h;
+  if(live)
+  {
+    uInt32 beamX = 0, beamY = 0;
+    const bool drawing = tia.electronBeamPos(beamX, beamY);
+    dst->vpos = static_cast<int>(tia.scanlines());
+    dst->hpos = static_cast<int>(tia.clocksThisLine());
+    // rows above the beam are this frame; between the picture and the next
+    // frame's first row there is none yet (or, past the picture, all)
+    dst->beam_row = drawing ? static_cast<int>(std::min<uInt32>(beamY, high))
+                            : (dst->vpos >= dst->vis_top + dst->fb_h ? dst->fb_h : 0);
+    fillLine(dst->now, tdbg);
+    dst->serial = dst->frame > 0 ? 1 : 0;
+  }
+}
+
+bool StellaHost::captureGet(a2600vid_capture* dst, uInt64* serialInOut)
+{
+  const std::lock_guard<std::mutex> lock(myCapMutex);
+  if(!myCapPub || myCapPub->serial == 0) return false;
+  if(serialInOut && *serialInOut == myCapPub->serial) return false;
+  std::memcpy(static_cast<void*>(dst), myCapPub.get(), sizeof *dst);
+  if(serialInOut) *serialInOut = myCapPub->serial;
+  return true;
+}
+
+bool StellaHost::captureFill(a2600vid_capture* dst)
+{
+  return withStella([this, dst](OSystem& osys) {
+    if(!osys.hasConsole() || !myCapCur) return false;
+    buildCapture(dst, true);
+    return true;
+  });
 }
 
 // ---- debugger ----------------------------------------------------------

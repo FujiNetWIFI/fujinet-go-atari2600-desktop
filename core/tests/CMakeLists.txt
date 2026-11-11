@@ -16,6 +16,16 @@ target_include_directories(fuji_trace_test PRIVATE
 target_link_libraries(fuji_trace_test PRIVATE Threads::Threads)
 add_test(NAME fuji_trace COMMAND fuji_trace_test)
 
+# Watches, range and search parsing, breakpoint descriptions, region names
+# and the trace ring's format and filters, pure (the debugger calls they make
+# are stubbed in the test). No emulator, no SDL.
+add_executable(memtools_test memtools_test.c
+  "${CMAKE_SOURCE_DIR}/core/src/memtools.c" "${CMAKE_SOURCE_DIR}/core/src/m6502dasm.c")
+target_include_directories(memtools_test PRIVATE
+  "${CMAKE_SOURCE_DIR}/core/include" "${CMAKE_SOURCE_DIR}/core/src")
+target_link_libraries(memtools_test PRIVATE Threads::Threads)
+add_test(NAME memtools COMMAND memtools_test)
+
 # These need the session layer, which needs SDL3. On a build without it
 # (a cross-toolchain, or a lean machine) the core's own tests still run.
 if(TARGET a2600_session)
@@ -75,5 +85,18 @@ add_executable(debug_test debug_test.c)
 target_link_libraries(debug_test PRIVATE a2600_session)
 add_test(NAME debug COMMAND debug_test)
 set_tests_properties(debug PROPERTIES TIMEOUT 120)
+
+# The Video tab's controller (core/src/vidtab.c): the TIA's priority encoder
+# replayed from synthetic captures, the views, the inspector, the tables and
+# a fuzz; then against the real machine (CONFIG): Display is the TIA's frame
+# at a stop, the replay matches it, write traps from a swatch.
+add_executable(vidtab_test vidtab_test.c)
+target_link_libraries(vidtab_test PRIVATE a2600_session)
+add_test(NAME vidtab COMMAND vidtab_test)
+add_executable(vidtab_live_test vidtab_live_test.c)
+target_link_libraries(vidtab_live_test PRIVATE a2600_session)
+add_test(NAME vidtab_live COMMAND vidtab_live_test)
+set_tests_properties(vidtab_live PROPERTIES TIMEOUT 120)
+
 
 endif()

@@ -33,6 +33,10 @@ void a2600debug_resume(a2600debug *d);      /* "run" */
 /* Why the machine last stopped: message from Stella ("BP: ...", a trap, a
  * fatal error) and the address, -1 if none. Returns length. */
 int  a2600debug_stop_reason(a2600debug *d, char *dst, int dstsz, int *address);
+/* Bumped on every new stop (a breakpoint, a trap, Pause, a step), so a window
+ * can recentre its views on it; a refresh or an unrelated command does not
+ * move it. */
+uint64_t a2600debug_stop_serial(a2600debug *d);
 /* Bumped whenever a command ran or the machine stopped/resumed, so a window
  * knows when to refresh. */
 unsigned a2600debug_generation(a2600debug *d);
@@ -54,6 +58,10 @@ void a2600debug_scanline(a2600debug *d, int n);
 void a2600debug_frame(a2600debug *d, int n);
 void a2600debug_rewind(a2600debug *d, int n);
 void a2600debug_unwind(a2600debug *d, int n);
+/* F8 and Shift+F8: over a JSR (Stella's "trace"), and out of the routine
+ * (runToPc of the return address on the stack). */
+void a2600debug_step_over(a2600debug *d);
+void a2600debug_step_out(a2600debug *d);
 /* Run until PC == addr ("runToPc"). */
 void a2600debug_run_to(a2600debug *d, uint16_t addr);
 
@@ -123,13 +131,19 @@ void a2600debug_write(a2600debug *d, uint16_t addr, uint8_t value);
 void a2600debug_ram_get(a2600debug *d, uint8_t out[128]);
 /* Patch the cartridge image itself (survives a bank switch). */
 int  a2600debug_patch_rom(a2600debug *d, uint16_t addr, uint8_t value);
+/* Stella's expression evaluator (registers a x y pc, labels, $hex, @addr,
+ * _old/_value ...; `old` and `value` also work): 0 and *out, or -1 with a
+ * message in err. */
+int  a2600debug_eval(a2600debug *d, const char *expression, long *out,
+                     char *err, int errsz);
 
 /* ---- disassembly --------------------------------------------------------------- */
 typedef struct {
     uint16_t address;
     int type;              /* Device::AccessType bits: 1 CODE, 2 GFX, 4 PGFX, 8 COL... 0x10 DATA, 0x40 ROW */
     int is_pc;
-    int has_breakpoint;
+    int has_breakpoint;    /* an enabled execute breakpoint covers it (in this bank) */
+    int bp_disabled;       /* only a disabled one does (the grey dot) */
     char bytes[24];
     char label[32];
     char disasm[48];
@@ -153,17 +167,127 @@ int  a2600debug_address_label(a2600debug *d, uint16_t addr, char *dst, int dstsz
 int  a2600debug_load_symbols(a2600debug *d, char *msg, int msgsz);
 /* Cartridge: scheme name and bank state, one line. */
 int  a2600debug_cart_info(a2600debug *d, char *dst, int dstsz);
+/* Define a label (a Symbols-tab edit); 0, or -1 if refused. */
+int  a2600debug_set_label(a2600debug *d, uint16_t addr, const char *label);
 
-/* ---- breakpoints -------------------------------------------------------------- */
+/* ---- symbols (user labels: a loaded .sym/.lst, "define", set_label; Stella's
+ * system equates (WSYNC ...) are not listed) -------------------------------- */
+int  a2600debug_symbols_count(a2600debug *d);
+/* Entry `index` (0 .. count-1): address and name. Returns 1, or 0 past the
+ * end. The indices are unstable (a load or clear reorders them): filter on
+ * every call. */
+int  a2600debug_symbols_get(a2600debug *d, int index, uint16_t *addr, char *name, int namesz);
+/* Indices of the entries whose name contains `text` (case-insensitive; empty
+ * matches all), by address then name. Returns the count written. */
+int  a2600debug_symbols_filter(a2600debug *d, const char *text, int *out, int max);
+/* Forget every user label; the disassembly drops them at once. */
+void a2600debug_clear_symbols(a2600debug *d);
+
+/* ---- breakpoints and traps ---------------------------------------------------- */
+/* The core keeps the table (Stella has no ids, no hit counts, no disabled
+ * state): an enabled entry is installed in Stella (BreakpointMap, a hidden
+ * breakIf or a trap), a disabled one is only kept here. Anything set at the
+ * console ("break", "breakIf", "trapWrite" ...) is adopted into the table, and
+ * one removed there ("clearBreaks", "delBreakIf" ...) leaves it. After a
+ * cartridge swap the enabled entries are installed again. */
 #define A2600DEBUG_ANY_BANK 0xffff
+typedef enum {
+    A2600DEBUG_BP_EXEC = 1, A2600DEBUG_BP_READ = 2, A2600DEBUG_BP_WRITE = 4,
+    /* Read and write as one entry (Stella's "trap"): READ | WRITE */
+    A2600DEBUG_BP_ACCESS = 6
+} a2600debug_bp_type;
+typedef struct {
+    int id;                /* 1, 2, 3 ... (never reused) */
+    int type;              /* a2600debug_bp_type bits */
+    uint16_t start, end;   /* EXEC: the address (end >= start: any pc in it) */
+    int bank;              /* EXEC only: a bank, or A2600DEBUG_ANY_BANK */
+    int enabled;
+    unsigned hits;         /* stops it caused, counted here */
+    /* A Stella expression ("a==$ff", "_value != _old"); `old` and `value`
+     * are accepted for `_old` and `_value`. A condition-only break the
+     * console set ("breakIf {x>3}") is EXEC $0000-$FFFF. */
+    char condition[128];
+} a2600debug_breakpoint;
+/* An execute breakpoint (no condition) at addr in bank: added if absent,
+ * removed if present. Returns 1 when one is now set. */
 int  a2600debug_breakpoint_toggle(a2600debug *d, uint16_t addr, int bank);
+/* An enabled execute breakpoint at addr in bank. */
 int  a2600debug_breakpoint_check(a2600debug *d, uint16_t addr, int bank);
-/* out[i] = address | bank << 16; returns the count. */
+/* The enabled plain execute breakpoints: out[i] = address | bank << 16;
+ * returns the count. (a2600debug_bp_list has them all.) */
 int  a2600debug_breakpoint_list(a2600debug *d, uint32_t *out, int max);
+/* Clears every entry, Stella's breakpoints and traps included. */
 void a2600debug_breakpoint_clear(a2600debug *d);
-/* Read/write traps on an address range. */
+/* Read/write traps as Stella has them on an address. */
 int  a2600debug_trap_read(a2600debug *d, uint16_t addr);
 int  a2600debug_trap_write(a2600debug *d, uint16_t addr);
+
+/* Adds an entry (enabled): EXEC at start (bank), READ/WRITE/ACCESS over
+ * start..end. An identical entry is returned, enabled, instead of a copy.
+ * Returns the id, or -1 if the condition does not parse. */
+int  a2600debug_bp_add(a2600debug *d, int type, uint16_t start, uint16_t end,
+                       int bank, const char *condition);
+void a2600debug_bp_remove(a2600debug *d, int id);
+void a2600debug_bp_enable(a2600debug *d, int id, int enabled);
+/* All entries in id order; returns the count (up to max). */
+int  a2600debug_bp_list(a2600debug *d, a2600debug_breakpoint *out, int max);
+/* Zero every hit count. */
+void a2600debug_bp_clear_hits(a2600debug *d);
+
+/* ---- the trace ring ------------------------------------------------------------ */
+typedef struct {
+    uint16_t pc;
+    uint8_t a, x, y, p, sp;  /* the registers before the instruction ran */
+    uint8_t bytes[3];        /* its first bytes (0 where unreadable) */
+    int16_t bank;            /* the cartridge bank holding pc */
+    uint64_t cycles;         /* system cycles */
+    int16_t scanline, dot;   /* the beam: frame line, colour clock 0-227 (0-67 is HBLANK) */
+} a2600debug_trace_entry;
+/* The ring keeps the newest 65536; allocated on the first enable and filled
+ * from Stella's instruction tap (reinstalled after a cartridge swap). */
+void a2600debug_trace_enable(a2600debug *d, int on);
+int  a2600debug_trace_enabled(a2600debug *d);
+/* Newest first; returns entries copied. */
+int  a2600debug_trace_read(a2600debug *d, a2600debug_trace_entry *out, int max);
+void a2600debug_trace_clear(a2600debug *d);
+/* Entries held. */
+int  a2600debug_trace_count(a2600debug *d);
+/* Pure (memtools.c): "F017  JSR $F020  A=00 X=01 Y=00 P=34 SP=FF". */
+int  a2600debug_trace_format(const a2600debug_trace_entry *t, char *dst, int dstsz);
+enum { A2600DEBUG_TRACE_ALL = 0, A2600DEBUG_TRACE_BRANCHES, A2600DEBUG_TRACE_RANGE };
+/* 1 if the entry passes the filter (BRANCHES: jumps, calls, returns and
+ * conditional branches; RANGE: pc in lo..hi, either way round). Pure. */
+int  a2600debug_trace_match(const a2600debug_trace_entry *t, int filter, uint16_t lo, uint16_t hi);
+
+/* ---- memory search and the memory map ----------------------------------------- */
+#define A2600DEBUG_SEARCH_NOCASE 1
+/* The 6507's bus is 13 bits: $0000-$1FFF. Stopped only (-1 while running).
+ * Finds up to max start addresses in from..to (clamped to $1FFF) as mapped
+ * now, where (mem & mask) == (pat & mask) for all n bytes (`to` bounds the
+ * start, not the end). Returns the count. */
+int  a2600debug_search(a2600debug *d, const uint8_t *pat, int n, uint8_t mask,
+                       int flags, uint16_t from, uint16_t to, uint16_t *out, int max);
+/* The next match after `from` (before it if backward), wrapping once.
+ * Returns 1 and *found, 0 for none, -1 while running. */
+int  a2600debug_search_next(a2600debug *d, const uint8_t *pat, int n, uint8_t mask,
+                            int flags, uint16_t from, int backward, uint16_t *found);
+
+typedef struct {
+    uint16_t lo, hi;
+    int readable, writable;
+    char name[48];
+} a2600debug_region;
+/* Ordered, non-overlapping regions covering $0000-$1FFF exactly: TIA, RIOT
+ * RAM and I/O, their mirrors, and the cartridge by bank ("Cartridge bank 2"),
+ * as the page table maps them now. Returns the count (up to max). */
+int  a2600debug_memory_map(a2600debug *d, a2600debug_region *out, int max);
+
+/* ---- sound ---------------------------------------------------------------------- */
+typedef struct {
+    uint8_t audc[2], audf[2], audv[2];   /* the TIA's two channels */
+    char freq[2][24];                    /* Stella's frequency text ("1.9 kHz") */
+} a2600debug_sound;
+void a2600debug_sound_get(a2600debug *d, a2600debug_sound *out);
 
 /* ---- states ------------------------------------------------------------------- */
 void a2600debug_state_save(a2600debug *d, int slot);
