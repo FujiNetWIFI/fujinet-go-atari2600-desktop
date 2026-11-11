@@ -173,6 +173,9 @@ class StellaHost
     // Resume ("run").
     void dbgContinue();
     bool isStopped() const { return myState.load() == EventHandlerState::DEBUGGER; }
+    /// Counts the entries into the debugger, so a stop can be matched to the
+    /// reason recorded for it (the state flips before the reason is set).
+    uint64_t stopEpoch() const { return myStopEpoch.load(); }
     EventHandlerState state() const { return myState.load(); }
 
     OSystem* osystem() const;
@@ -206,6 +209,7 @@ class StellaHost
     std::atomic<bool> myRunning{false};
     std::atomic<bool> myQuit{false};
     std::atomic<EventHandlerState> myState{EventHandlerState::NONE};
+    std::atomic<uint64_t> myStopEpoch{0};
     std::string myLastError;
 
     // jobs

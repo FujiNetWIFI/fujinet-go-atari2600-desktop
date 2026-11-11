@@ -449,6 +449,8 @@ void StellaHost::enterStopped(StopReason reason, const std::string& msg, int add
 void StellaHost::onStateChanged(EventHandlerState state)
 {
   const EventHandlerState old = myState.exchange(state);
+  if(state == EventHandlerState::DEBUGGER && old != EventHandlerState::DEBUGGER)
+    ++myStopEpoch;
   if(old == EventHandlerState::DEBUGGER && state == EventHandlerState::EMULATION)
   {
     myNextFrameNs = monoNs();

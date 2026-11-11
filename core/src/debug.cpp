@@ -77,6 +77,7 @@ struct a2600debug
   StellaHost* host{nullptr};
   std::atomic<unsigned> generation{0};
   std::atomic<uint64_t> stopSerial{0};
+  std::atomic<uint64_t> notedEpoch{0};   // the host's stop epoch whose reason is recorded
   std::mutex mutex;
   std::string reason;
   int reasonAddr{-1};
@@ -398,7 +399,9 @@ extern "C" a2600debug* a2600debug_get(a2600session* s)
 
 extern "C" int a2600debug_is_stopped(a2600debug* d)
 {
-  return d && d->host->isStopped() ? 1 : 0;
+  // Stopped once the stop's reason is recorded too: the host flips its state
+  // on entering the debugger and the reason follows from the stop callback.
+  return d && d->host->isStopped() && d->notedEpoch.load() == d->host->stopEpoch() ? 1 : 0;
 }
 
 extern "C" void a2600debug_stop(a2600debug* d)
@@ -470,6 +473,7 @@ void set_reason(a2600debug* d, const std::string& text, int addr)
     d->reason = text;
     d->reasonAddr = addr;
   }
+  d->notedEpoch = d->host->stopEpoch();
   ++d->stopSerial;
   ++d->generation;
 }
