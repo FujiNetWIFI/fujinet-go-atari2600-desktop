@@ -29,6 +29,7 @@ add_executable(fujinet-go-atari2600-gnome
   help/help_window.c
   keypad/keypad_window.c
   debugger/dbg_window.c
+  debugger/dbg_video.c
 )
 target_link_libraries(fujinet-go-atari2600-gnome
   PRIVATE a2600_session PkgConfig::GTK4 PkgConfig::ADW)
