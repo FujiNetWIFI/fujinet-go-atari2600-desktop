@@ -111,6 +111,13 @@ target_compile_definitions(a26_test PRIVATE
 add_test(NAME a26 COMMAND a26_test)
 set_tests_properties(a26 PROPERTIES TIMEOUT 60)
 
+# A running cartridge survives Stella's frame-layout redetect (save, sixty
+# frames, load), which runs after every FujiNet boot: the load once read zeros.
+add_executable(redetect_test redetect_test.cxx)
+target_link_libraries(redetect_test PRIVATE stella_core)
+add_test(NAME redetect COMMAND redetect_test)
+set_tests_properties(redetect PROPERTIES TIMEOUT 60)
+
 # The Video tab's controller (core/src/vidtab.c): the TIA's priority encoder
 # replayed from synthetic captures, the views, the inspector, the tables and
 # a fuzz; then against the real machine (CONFIG): Display is the TIA's frame

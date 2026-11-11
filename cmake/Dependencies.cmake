@@ -43,7 +43,7 @@
 
 find_package(Git QUIET)
 
-# stella, fork branch fujinet-go-a2600 (6fc9c6782, on add-fujinet-support
+# stella, fork branch fujinet-go-a2600 (0614b0828, on add-fujinet-support
 # 93bced464): "Add FujiNet support", "embed default config, add ability to specify config rom", "FujiNet: blits
 # 15-19 from fn-2600", "FujiNet: CONFIG with colour, a frame, a selection
 # bar and sound" and "FujiNet: wake the cart's worker under its mutex" --
@@ -53,8 +53,10 @@ find_package(Git QUIET)
 # (src/emucore/fujinet/FujiConfigROM.hxx, fujinet-config 4d35670: a pick
 # reads the whole filename -- the browser's listing is ellipsized past 30
 # characters, so every dump named like "Zaxxon (USA).a26" but longer failed to
-# mount with "BOOT FAILED E5 EE").
-set(STELLA_COMMIT "6fc9c6782cc53323d39d53b66abc1014847bb182")
+# mount with "BOOT FAILED E5 EE"). Plus one upstream fix: redetectFrameLayout()
+# rewinds its saved state before loading it (the load read zeros, so a game
+# booted on TV format Auto or over FujiNet restarted at PC 0 with RAM cleared).
+set(STELLA_COMMIT "0614b0828955eabfd9bdc6e98e778a4222c991fc")
 set(STELLA_URL "https://github.com/tschak909/stella")
 
 # fujinet-firmware, fork branch boip-idle-wait-on-nodelay (81f9fdb3c): the old

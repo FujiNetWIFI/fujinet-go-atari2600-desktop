@@ -143,7 +143,11 @@ void apply_port_types(OSystem& os, struct a2600session* s)
 void apply_tv_format(OSystem& os, int format)
 {
   if(!os.hasConsole()) return;
-  os.console().setFormat(stella_format(format), true);
+  // Not forced: on Auto the console detected its layout as it was built, and
+  // forcing a second detection rolls the machine back sixty frames -- under
+  // CONFIG, behind the back of the FujiNet cartridge's worker, which keeps
+  // the newer link state.
+  os.console().setFormat(stella_format(format), false);
 }
 
 CartridgeFUJI* fuji_cart(OSystem& os)
