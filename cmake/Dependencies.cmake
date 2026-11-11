@@ -43,15 +43,18 @@
 
 find_package(Git QUIET)
 
-# stella, branch add-fujinet-support (93bced464): "Add FujiNet support",
-# "embed default config, add ability to specify config rom", "FujiNet: blits
+# stella, fork branch fujinet-go-a2600 (6fc9c6782, on add-fujinet-support
+# 93bced464): "Add FujiNet support", "embed default config, add ability to specify config rom", "FujiNet: blits
 # 15-19 from fn-2600", "FujiNet: CONFIG with colour, a frame, a selection
 # bar and sound" and "FujiNet: wake the cart's worker under its mutex" --
 # the FujiNet cartridge, the SLIP/TCP link, the vendored mailbox protocol
 # (with the path-poke / tile-grid blits and FN_BLIT_MULEMAP, which draws the
 # 2600 M.U.L.E. map) and the embedded CONFIG client
-# (src/emucore/fujinet/FujiConfigROM.hxx, fujinet-config f38ed1d).
-set(STELLA_COMMIT "7789c4770eef3b9b95c7cbcbb96e4d1c2dfed501")
+# (src/emucore/fujinet/FujiConfigROM.hxx, fujinet-config 4d35670: a pick
+# reads the whole filename -- the browser's listing is ellipsized past 30
+# characters, so every dump named like "Zaxxon (USA).a26" but longer failed to
+# mount with "BOOT FAILED E5 EE").
+set(STELLA_COMMIT "6fc9c6782cc53323d39d53b66abc1014847bb182")
 set(STELLA_URL "https://github.com/tschak909/stella")
 
 # fujinet-firmware, fork branch boip-idle-wait-on-nodelay (81f9fdb3c): the old

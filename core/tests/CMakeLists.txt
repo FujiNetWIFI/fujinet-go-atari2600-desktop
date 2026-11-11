@@ -103,6 +103,14 @@ target_compile_definitions(bbstep_test PRIVATE
 add_test(NAME bbstep COMMAND bbstep_test)
 set_tests_properties(bbstep PROPERTIES TIMEOUT 120)
 
+# A cartridge named .a26 (most dumps) loads and runs, like the same image as .bin.
+add_executable(a26_test a26_test.c)
+target_link_libraries(a26_test PRIVATE a2600_session)
+target_compile_definitions(a26_test PRIVATE
+  BBASIC_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/bbasic")
+add_test(NAME a26 COMMAND a26_test)
+set_tests_properties(a26 PROPERTIES TIMEOUT 60)
+
 # The Video tab's controller (core/src/vidtab.c): the TIA's priority encoder
 # replayed from synthetic captures, the views, the inspector, the tables and
 # a fuzz; then against the real machine (CONFIG): Display is the TIA's frame
