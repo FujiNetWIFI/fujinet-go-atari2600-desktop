@@ -59,6 +59,13 @@
     <release version="@PROJECT_VERSION@" date="2026-11-11">
       <description>
         <p>
+          Fixed: some games started with a garbled screen, running slowly, when the TV format is Auto (the default) or when booted from CONFIG over FujiNet. Combat showed a broken playfield with no score or tanks. The emulator now restores the machine correctly after it detects whether a game is NTSC or PAL.
+        </p>
+      </description>
+    </release>
+    <release version="0.8.0" date="2026-11-11">
+      <description>
+        <p>
           Debug a batari Basic program by its source. The debugger has a new BASIC tab: import a .bas file or folder (the listing and symbol files batari Basic writes beside it are found for you, and a cartridge with its .bas next to it imports itself), click a line to set a breakpoint, and Step, Step Over and Step Out go by BASIC line while the tab shows. Variables carry their source names in Memory, Watches and the Console. This makes thirteen tabs.
         </p>
         <p>
