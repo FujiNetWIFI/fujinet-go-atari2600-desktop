@@ -384,62 +384,153 @@ and `bindings` (the controls that differ from the defaults).
 # Debugger
 
 The Debugger (<kbd>F12</kbd>) stops the console and shows what it is doing.
-It has eight tabs, laid out like Stella's own debugger; closing it lets the
-console go on as it was.
+It has twelve tabs; closing it lets the console go on as it was. The 6507's
+registers and flags sit in a strip under the tabs: edit a value while stopped
+and press <kbd>Enter</kbd>. The engine is Stella's own debugger.
 
 | Button | Does |
 |---|---|
 | Stop or Run (<kbd>F5</kbd>) | Stops before the next instruction, or runs on |
 | Step (<kbd>F7</kbd>) | One instruction |
-| Trace (<kbd>F8</kbd>) | One instruction, over a subroutine call |
+| Step Over (<kbd>F8</kbd>) | Over a JSR, to the instruction after it |
+| Step Out (<kbd>Shift+F8</kbd>) | On until the routine returns |
 | Scan+1 | On to the next scan line |
-| Frame+1 (<kbd>Shift+F8</kbd>) | On to the next frame |
+| Frame+1 | On to the next frame |
 | Rewind and Unwind | Back and forward through the recorded states |
+| Clear Breakpoints | Removes every breakpoint |
+| Break at | A symbol name or hex address, then <kbd>Enter</kbd> |
+| Load Symbols | Reads a DASM `.sym` or `.lst` file next to the cartridge |
+| Clear Symbols | Drops the loaded symbols |
+| Pop Out | Moves the tab that shows into a window of its own; **Dock** in that window puts it back |
 | Help | Opens the topic of the tab that shows |
 
-<!-- context: debugger/prompt -->
-## Prompt
+Every stop brings the views back to where the machine is, even if you had
+scrolled away, and the line at the top says why it stopped.
 
-Stella's own command parser: `help`, `break`, `breakIf`, `trap`, `trapWrite`,
-`watch`, `timer`, `saveStateIf`, `logTrace`, `define`, `function`,
-`code`, `data`, `gfx`, `pgfx` and `row` directives, `saveDis`, `saveRom` and
-the rest, with <kbd>Tab</kbd> completion. Type `help` for every command.
+<!-- context: debugger/console -->
+## Console
 
-<!-- context: debugger/cpu -->
-## CPU and RAM
+Stella's own command parser, with <kbd>Tab</kbd> completion: `help`, `break`,
+`breakIf`, `trap`, `trapWrite`, `timer`, `saveStateIf`, `logTrace`, `define`,
+`function`, the `code`, `data`, `gfx`, `pgfx` and `row` directives, `saveDis`,
+`saveRom` and the rest. Type `help` for every command. A condition may use
+`old`, the byte a write replaces, and `value`, the byte written. These are
+FujiNet Go's own:
 
-The 6507's registers and flags, and the 128 bytes of RAM. Click a value to
-edit it while stopped.
+| Command | Does |
+|---|---|
+| `cart` | The cartridge: scheme, bank and the FujiNet link |
+| `video` | The Video tab as text: `video colours`, `video lines`, `video writes` |
+| `watch`, `unwatch` | The watch list: `watch score`, `unwatch 0` (replaces Stella's `watch`) |
+| `find` | Searches memory for bytes (`find A9 00`) or text (`find text HELLO`) |
 
 <!-- context: debugger/disassembly -->
 ## Disassembly
 
-The DiStella listing of the current bank, with the opcode bytes and the
-breakpoints in the margin. Click a line to toggle its breakpoint. Follow PC
-keeps the current line in view.
+The DiStella listing of one bank, with the opcode bytes, cycles and labels. The
+current instruction is in the app's accent colour and a breakpoint is a red dot
+in the margin (a grey hollow one when it is disabled); click a line to toggle
+its breakpoint. The bank chooser picks the bank shown, and **Follow PC** keeps
+the current line in view.
 
-<!-- context: debugger/tia -->
-## TIA
+<!-- context: debugger/memory -->
+## Memory
 
-Every TIA register, the collision matrix, the audio channels, and the picture
-being drawn.
+The 8K the 6507 sees, 16 bytes to a row, each row labelled with what answers
+there (TIA, RAM, RIOT, a cartridge bank). **Go To** takes an address, a label, an
+expression or a range (`$80-$9F`) and highlights what it found. **Poke** writes
+bytes. The search bar finds hex bytes (`A9 00`) or text (not case-sensitive)
+with **Find Next** and **Find Previous**, wrapping once; the machine has to be
+stopped. Reading memory never touches a bank-switch hotspot or the RIOT timer.
 
-<!-- context: debugger/io -->
-## I/O
+<!-- context: debugger/breakpoints -->
+## Breakpoints
 
-The RIOT: its ports, the timer and the console switches.
+Every breakpoint and trap. **Add** one with a type, an address or range and, if
+you like, a condition:
 
-<!-- context: debugger/breaks -->
-## Breaks and traps
+- **Execute** stops before an instruction runs, in one bank or any.
+- **Read**, **Write** and **Access** (both) stop after the instruction that
+  touched memory, and the line at the top says what it did, for instance
+  `wrote $0009 = $41 (was $40)`.
 
-The breakpoints, traps and watches with their conditions. **Add**, **Remove**,
-and the check box to turn one off.
+A condition can use `old` and `value`: `value != old` stops only when a write
+changes something. The box beside each entry turns it off, and the list shows
+how many times it fired. **Clear Hits** zeroes the counts.
 
-<!-- context: debugger/states -->
-## States and cart
+<!-- context: debugger/watches -->
+## Watches
 
-The save and load state slots (and save to a file through the native
-picker), and the cartridge and link status.
+Things to keep an eye on: type an address, a symbol, an expression or a range
+and press <kbd>Enter</kbd>. Each shows its value while the machine is stopped
+(`-` while it runs). **Show in Memory** jumps to it in the Memory tab, **Break
+on Change** adds a Write breakpoint that fires when its value changes, and
+**Remove** drops it.
+
+<!-- context: debugger/cart -->
+## Cart and I/O
+
+The cartridge (its scheme, bank and the FujiNet link), the RIOT (its ports, the
+timer and the console switches), and the memory map as the console sees it. The
+save and load state slots, and saving the disassembly, ROM, access counters,
+session or a snapshot to a file through the native picker, are here too.
+
+<!-- context: debugger/trace -->
+## Trace
+
+Every instruction the 6507 runs, live. **Record** turns it on (it slows the
+console a little, so it starts off), **Clear** empties it, **Branches only**
+shows just the jumps, branches and returns, and **In range** only a range of
+addresses. Trace and History share one recording.
+
+<!-- context: debugger/history -->
+## History
+
+The same recording, read at a stop: the lead-up to a breakpoint or a pause,
+newest at the bottom, with the registers, scan line and colour clock at each
+instruction. Turn **Record** on before you run to the place you want to look at.
+
+<!-- context: debugger/video -->
+## Video
+
+The TIA, with the picture on the left and the sections on the right. A game
+changes the TIA's registers while the beam is drawing (that is how it gets more
+than two sprites, or a colour bar), so the console records what each line was
+drawn with and the views use it.
+
+| View | Shows |
+|---|---|
+| Display | The last finished frame, as the screen showed it |
+| Decoded | Each pixel tinted by what drew it: background, playfield, the two players, the two missiles or the ball |
+| Beam | Stopped only: this frame as far as the beam has drawn it, the last one dimmed below |
+| Values | The raw colour indexes |
+
+**Zoom** goes from 1 to 16 times, or **Fit**. **Overlays** switch on the beam,
+the TIA writes of the frame (they fade), the registers that changed, the object
+positions and the blanked lines.
+
+Point at a pixel to see it in **Pixel**: the object, its register, its colour
+and the scan line. Click to pin it, click again to let go. Double-click it, or
+press **Break on writes**, to stop the machine when anything writes the
+registers that drew it.
+
+**Registers** shows the TIA's registers and what they mean; one that changed in
+the last few refreshes is highlighted. **Colours** shows the palette with the
+pixels that use it. **Lines** lists the lines where the colours, playfield,
+graphics or positions change. **Writes** lists the TIA writes with their colour
+clock and scan line. **Timing** shows the beam.
+
+<!-- context: debugger/sound -->
+## Sound
+
+The TIA's two audio channels: AUDC, AUDF and AUDV, and the frequency each makes.
+
+<!-- context: debugger/symbols -->
+## Symbols
+
+Every known symbol, from a loaded `.sym` or `.lst` file or defined at the
+Console. **Filter** narrows the list, and activating a row goes to that address
+in the Disassembly.
 
 <!-- context: debugger/fujinet -->
 ## FujiNet packets

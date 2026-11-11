@@ -27,12 +27,13 @@ static const char *const platform_names[] = { "GNOME", "KDE", "Windows", "macOS"
 /* What the frontends' Help buttons and menus open. */
 static const char *const contexts[] = {
     "main", "import-sd", "keypad", "fujilog", "prefs/Machine",
-    "debugger/prompt", "debugger/cpu", "debugger/disassembly", "debugger/tia",
-    "debugger/io", "debugger/breaks", "debugger/states", "debugger/fujinet",
+    "debugger/console", "debugger/disassembly", "debugger/memory", "debugger/breakpoints",
+    "debugger/watches", "debugger/cart", "debugger/trace", "debugger/history",
+    "debugger/video", "debugger/sound", "debugger/symbols", "debugger/fujinet",
 };
 
 /* The prompt's commands (core/include/a2600debug.h). */
-static const char *const debug_commands[] = { "help" };
+static const char *const debug_commands[] = { "help", "cart", "video", "watch", "unwatch", "find" };
 
 /* The Preferences pages: what each one has, as the frontends label it. */
 static const struct {
@@ -208,7 +209,7 @@ static void
 check_debugger(int p)
 {
     int t, b;
-    CHECK(a2600help_find("debugger/prompt", &t, &b) == 0, "no debugger/prompt");
+    CHECK(a2600help_find("debugger/console", &t, &b) == 0, "no debugger/console");
     const a2600help_topic *tp = a2600help_topic_at(t);
     int end = a2600help_section_end(t, b);
     for (size_t k = 0; k < sizeof debug_commands / sizeof *debug_commands; k++) {
@@ -227,12 +228,25 @@ check_debugger(int p)
             }
         }
         if (!found) {
-            fprintf(stderr, "MISSING (%s) debugger/prompt: command `%s`\n", platform_names[p], cmd);
+            fprintf(stderr, "MISSING (%s) debugger/console: command `%s`\n", platform_names[p], cmd);
             misses++;
         }
     }
-    /* the eight tabs */
-    require(p, "debugger", "tabs", "eight tabs");
+    /* the twelve tabs */
+    require(p, "debugger", "tabs", "twelve tabs");
+    require(p, "debugger/video", "views", "Display");
+    require(p, "debugger/video", "views", "Decoded");
+    require(p, "debugger/video", "views", "Beam");
+    require(p, "debugger/video", "views", "Values");
+    require(p, "debugger/video", "zoom", "Fit");
+    require(p, "debugger/video", "overlays", "Overlays");
+    require(p, "debugger/video", "inspector", "Pixel");
+    require(p, "debugger/video", "sections", "Registers");
+    require(p, "debugger/video", "sections", "Colours");
+    require(p, "debugger/video", "sections", "Lines");
+    require(p, "debugger/video", "sections", "Writes");
+    require(p, "debugger/video", "sections", "Timing");
+    require(p, "debugger/video", "break", "Break on writes");
 }
 
 int
@@ -271,9 +285,9 @@ main(void)
     CHECK(a2600help_find("#the-settings-file", &t, &b) == 0 && b >= 0, "#the-settings-file");
     CHECK(a2600help_search(A2600HELP_GNOME, "cartridge", hits, 16) > 0, "search cartridge");
     CHECK(a2600help_search(A2600HELP_GNOME, "zzqxj", hits, 16) == 0, "search nonsense");
-    int n = a2600help_search(A2600HELP_KDE, "breaks and traps", hits, 16);
-    CHECK(n > 0 && a2600help_find("debugger/breaks", &t, &b) == 0
-          && hits[0].topic == t && hits[0].block == b, "breaks is the first hit");
+    int n = a2600help_search(A2600HELP_KDE, "breakpoints", hits, 16);
+    CHECK(n > 0 && a2600help_find("debugger/breakpoints", &t, &b) == 0
+          && hits[0].topic == t && hits[0].block == b, "breakpoints is the first hit");
     for (int i = 1; i < n; i++)
         CHECK(hits[i - 1].score >= hits[i].score, "hits best first");
 
