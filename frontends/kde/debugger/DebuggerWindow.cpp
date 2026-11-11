@@ -4,13 +4,16 @@
  * the family's KDE debuggers.
  *
  * Tabs, in this order (A2600_DEBUGGER_TAB picks the one a window opens on, by
- * index or by name -- 0 console, 1 disassembly, 2 memory, 3 breakpoints,
- * 4 watches, 5 cart, 6 trace, 7 history, 8 video, 9 sound, 10 symbols,
- * 11 fujinet -- or by the start of a label): the Console (Stella's command
+ * index or by name -- 0 console, 1 disassembly, 2 basic, 3 memory, 4 breakpoints,
+ * 5 watches, 6 cart, 7 trace, 8 history, 9 video, 10 sound, 11 symbols,
+ * 12 fujinet -- or by the start of a label): the Console (Stella's command
  * parser, with a history and Tab completion), the Disassembly (one bank's
  * DiStella listing, a bank chooser; click a line to select it for Run to
  * Cursor; click its left edge, double-click it or press F9 for its
- * breakpoint), Memory (the 8K the 6507 sees, Go to a label / address /
+ * breakpoint), BASIC (an imported batari Basic source, one row a line: click
+ * a line for its breakpoint; Step, Step Over and Step Out go by line while it
+ * shows; A2600_BASIC_IMPORT / A2600_BASIC_BREAK=name.bas:line for captures),
+ * Memory (the 8K the 6507 sees, Go to a label / address /
  * range, a hex or text search, Poke), Breakpoints (execute, read, write and
  * access, with a bank for execute and a condition), Watches (a value list,
  * Break on change), Cart & I/O (the cartridge, the RIOT, the memory map, the
@@ -87,7 +90,7 @@ extern "C" {
 namespace {
 
 enum {
-    TAB_CONSOLE, TAB_DISASM, TAB_MEMORY, TAB_BREAKS, TAB_WATCHES, TAB_CART, TAB_TRACE, TAB_HISTORY, TAB_VIDEO,
+    TAB_CONSOLE, TAB_DISASM, TAB_BASIC, TAB_MEMORY, TAB_BREAKS, TAB_WATCHES, TAB_CART, TAB_TRACE, TAB_HISTORY, TAB_VIDEO,
     TAB_SOUND, TAB_SYMBOLS, TAB_FUJINET, TAB_COUNT
 };
 
@@ -95,6 +98,7 @@ enum {
  * it takes too), and their Help contexts (debugger/<help>). */
 const struct { const char *name, *label, *help; } kTabs[TAB_COUNT] = {
     { "console", "Console", "console" },           { "disassembly", "Disassembly", "disassembly" },
+    { "basic", "BASIC", "basic" },
     { "memory", "Memory", "memory" },              { "breakpoints", "Breakpoints", "breakpoints" },
     { "watches", "Watches", "watches" },           { "cart", "Cart & I/O", "cart" },
     { "trace", "Trace", "trace" },                 { "history", "History", "history" },
@@ -317,6 +321,12 @@ bool isDebuggerKey(const QKeyEvent *e)
     }
 }
 
+/* BASIC tab gutter: a breakpoint's dot (state 1 on, 2 off), blank otherwise. */
+QString dotFor(int state)
+{
+    return state == 1 ? QStringLiteral("\u25CF") : state == 2 ? QStringLiteral("\u25CB") : QStringLiteral(" ");
+}
+
 QPointer<DebuggerWindow> s_win;
 
 /* The breakpoint type of a chooser row. */
@@ -361,6 +371,7 @@ DebuggerWindow::DebuggerWindow(a2600session *session, QWidget *parent)
     m_tabs->setUsesScrollButtons(true);
     m_pages[TAB_CONSOLE] = buildConsole();
     m_pages[TAB_DISASM] = buildDisasm();
+    m_pages[TAB_BASIC] = buildBasic();
     m_pages[TAB_MEMORY] = buildMemory();
     m_pages[TAB_BREAKS] = buildBreaks();
     m_pages[TAB_WATCHES] = buildWatches();
@@ -393,11 +404,24 @@ DebuggerWindow::DebuggerWindow(a2600session *session, QWidget *parent)
         if (page == TAB_HISTORY) m_hSeen[1] = -1;
         refreshPage(page, false);
         if (page == TAB_CONSOLE) m_conIn->setFocus();
+        if (page == TAB_BASIC) basicScrollToPc();   /* the view has no size until it shows */
     });
     root->addWidget(m_tabs, 1);
     root->addWidget(buildRegs());
     setCentralWidget(central);
     statusBar();
+
+    /* the source beside the cartridge, if there is one */
+    {
+        a2600srcmap_import_result res;
+        if (a2600debug_basic_auto_import(m_dbg, &res) == 1) basicNote(res, false);
+    }
+    /* A2600_BASIC_IMPORT=<.bas file or folder> imports it as Import File / Import
+     * Folder would, A2600_BASIC_BREAK=<name.bas>:<line> toggles a breakpoint on
+     * that line */
+    if (const QByteArray imp = qgetenv("A2600_BASIC_IMPORT"); !imp.isEmpty()) basicImported(QString::fromUtf8(imp), false);
+    m_envBreak = qEnvironmentVariable("A2600_BASIC_BREAK");
+    applyEnvBreak();
 
     /* for captures and tests: A2600_DEBUGGER_WATCH adds watches (a comma list),
      * A2600_DEBUGGER_WATCH_BREAK a watch with a break-on-change over it,
@@ -463,11 +487,11 @@ QWidget *DebuggerWindow::buildToolbar()
     m_runBtn->setStyleSheet(QStringLiteral("QPushButton:checked { background:%1; color:%2; }")
                                 .arg(accentColor().name(), accentInk().name()));
     auto *step = add(QStringLiteral("Step (F7)"), QStringLiteral("One instruction"),
-                     [this] { stepAnd([this] { a2600debug_step(m_dbg); }); });
+                     [this] { stepAnd([this] { doStep(); }); });
     add(QStringLiteral("Step Over (F8)"), QStringLiteral("Over a JSR"),
-        [this] { stepAnd([this] { a2600debug_step_over(m_dbg); }); });
+        [this] { stepAnd([this] { doStepOver(); }); });
     add(QStringLiteral("Step Out (Shift+F8)"), QStringLiteral("On until the routine returns"),
-        [this] { stepAnd([this] { a2600debug_step_out(m_dbg); }); });
+        [this] { stepAnd([this] { doStepOut(); }); });
     add(QStringLiteral("Run to Cursor"), QStringLiteral("On to the line selected in the Disassembly"),
         [this] { runToCursor(); });
     add(QStringLiteral("Scan+1"), QStringLiteral("On to the next scan line"),
@@ -1248,6 +1272,275 @@ void DebuggerWindow::refreshDisasm()
     m_disasm->setExtraSelections(sel);
 }
 
+/* ---- BASIC tab -------------------------------------------------------------- */
+
+namespace {
+/* The current line: a bar in the accent, as in the Disassembly. The bar is the
+ * block's own background (a full-width ExtraSelection would repaint the gutter's
+ * dot); the ink is a selection over all but the gutter column. `prev` is the
+ * block wearing the bar, so a refresh that kept the text can move it. */
+void basicBar(QList<QTextEdit::ExtraSelection> &out, QPlainTextEdit *v, int &prev, int block)
+{
+    QTextDocument *doc = v->document();
+    auto setBg = [doc](int n, const QBrush &brush) {
+        const QTextBlock b = doc->findBlockByNumber(n);
+        if (!b.isValid()) return;
+        QTextCursor c(b);
+        QTextBlockFormat f = c.blockFormat();
+        f.setBackground(brush);
+        c.setBlockFormat(f);
+    };
+    if (prev >= 0 && prev != block) setBg(prev, Qt::NoBrush);
+    prev = -1;
+    if (block < 0) return;
+    setBg(block, accentColor());
+    prev = block;
+    QTextEdit::ExtraSelection ink;
+    const QTextBlock b = doc->findBlockByNumber(block);
+    ink.cursor = QTextCursor(b);
+    ink.cursor.setPosition(b.position() + 1);
+    ink.cursor.setPosition(b.position() + b.length() - 1, QTextCursor::KeepAnchor);
+    ink.format.setForeground(accentInk());
+    out.append(ink);
+}
+} // namespace
+
+QWidget *DebuggerWindow::buildBasic()
+{
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    auto *bar = new QHBoxLayout;
+    auto button = [&](const QString &label, const QString &tip, int kind) {
+        auto *b = new QPushButton(label);
+        b->setToolTip(tip);
+        connect(b, &QPushButton::clicked, this, [this, kind] { basicPick(kind); });
+        bar->addWidget(b);
+    };
+    button(QStringLiteral("Import File…"), QStringLiteral("Load a .bas file and everything it includes"), 0);
+    button(QStringLiteral("Import Folder…"), QStringLiteral("Load every .bas file under a folder"), 1);
+    button(QStringLiteral("Load Map…"), QStringLiteral("Load a bB listing (.lst)"), 2);
+    m_basFiles = new QComboBox;
+    m_basFiles->setToolTip(QStringLiteral("The source file shown"));
+    m_basFiles->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    connect(m_basFiles, QOverload<int>::of(&QComboBox::activated), this, [this](int i) {
+        m_basFile = i;
+        m_basPcLine = 0;
+        refreshBasic();
+    });
+    bar->addWidget(m_basFiles);
+    bar->addStretch(1);
+    layout->addLayout(bar);
+    m_basNote = new QLabel;
+    m_basNote->setWordWrap(true);
+    m_basNote->setEnabled(false);       /* the dim, secondary text colour */
+    layout->addWidget(m_basNote);
+    m_basView = monoView();
+    m_basView->setFocusPolicy(Qt::NoFocus);
+    m_basView->viewport()->setCursor(Qt::ArrowCursor);
+    m_basView->viewport()->installEventFilter(this);
+    layout->addWidget(m_basView, 1);
+    return page;
+}
+
+/* On screen, with the keys: the BASIC tab, or its window when that is the active one. */
+bool DebuggerWindow::basicTab() const
+{
+    return currentTab() == TAB_BASIC || (m_popped[TAB_BASIC] && m_popped[TAB_BASIC]->isActiveWindow());
+}
+
+/* On the BASIC tab the three steppers go by BASIC line. */
+void DebuggerWindow::doStep()
+{
+    if (basicTab()) a2600debug_step_line(m_dbg); else a2600debug_step(m_dbg);
+}
+
+void DebuggerWindow::doStepOver()
+{
+    if (basicTab()) a2600debug_step_line_over(m_dbg); else a2600debug_step_over(m_dbg);
+}
+
+void DebuggerWindow::doStepOut()
+{
+    if (basicTab()) a2600debug_step_line_out(m_dbg); else a2600debug_step_out(m_dbg);
+}
+
+void DebuggerWindow::basicToggleAt(int line)
+{
+    if (m_basFile < 0) return;
+    if (a2600debug_line_break_toggle(m_dbg, m_basFile, line) < 0) {
+        message(QStringLiteral("No code on that line"));
+        return;
+    }
+    m_basGen = ~0u;                     /* redraw the dot now */
+    refreshBasic();
+    refreshBps();
+}
+
+void DebuggerWindow::basicScrollToPc()
+{
+    if (m_basPcLine < 1) return;
+    const QTextBlock block = m_basView->document()->findBlockByNumber(m_basPcLine - 1);
+    if (!block.isValid()) return;
+    m_basView->setTextCursor(QTextCursor(block));
+    m_basView->centerCursor();
+}
+
+/* A2600_BASIC_BREAK=<name.bas>:<line>: the breakpoint is set once the machine has a console
+ * (the engine ignores a toggle before that), so a tick retries until it holds. */
+void DebuggerWindow::applyEnvBreak()
+{
+    if (!m_envBreak.contains(QLatin1Char(':'))) return;
+    const QString name = m_envBreak.section(QLatin1Char(':'), 0, 0);
+    const int line = m_envBreak.section(QLatin1Char(':'), 1).toInt();
+    a2600srcmap *map = a2600srcmap_shared();
+    for (int f = 0; f < a2600srcmap_file_count(map); ++f) {
+        const QString fn = QString::fromUtf8(a2600srcmap_file_name(map, f));
+        if (fn != name && !fn.endsWith(QLatin1Char('/') + name)) continue;
+        if (a2600debug_line_break_state(m_dbg, f, line) == 1 ||
+            (a2600debug_line_break_toggle(m_dbg, f, line) == 1 && a2600debug_line_break_state(m_dbg, f, line) == 1))
+            m_envBreak.clear();
+    }
+}
+
+/* The note under the buttons, from an import's result. */
+void DebuggerWindow::basicNote(const a2600srcmap_import_result &r, bool failed)
+{
+    if (failed) {
+        m_basNote->setText(QStringLiteral("Could not read that file or folder."));
+        return;
+    }
+    QString msg = QStringLiteral("%1 file%2, %3 line%4 with code")
+                      .arg(r.files).arg(r.files == 1 ? QString() : QStringLiteral("s"))
+                      .arg(r.mapped).arg(r.mapped == 1 ? QString() : QStringLiteral("s"));
+    if (r.map_path[0]) {
+        msg += QStringLiteral(" (from %1%2)").arg(QFileInfo(QString::fromUtf8(r.map_path)).fileName(),
+                                                  r.old_format ? QStringLiteral(", old compiler: matched by text") : QString());
+        if (r.sym_path[0]) msg += QStringLiteral(", symbols from %1").arg(QFileInfo(QString::fromUtf8(r.sym_path)).fileName());
+    } else {
+        msg += QStringLiteral(". No listing found beside the source: build with bB, then Load Map.");
+    }
+    m_basNote->setText(msg);
+    m_basGen = ~0u;
+}
+
+void DebuggerWindow::basicImported(const QString &path, bool folder)
+{
+    Q_UNUSED(folder);
+    a2600srcmap_import_result res;
+    const int rc = a2600debug_basic_import(m_dbg, path.toUtf8().constData(), &res);
+    basicNote(res, rc != 0);
+    if (rc == 0) m_basFile = -1;        /* the first file with code is picked */
+    if (m_basView) refreshBasic();
+}
+
+void DebuggerWindow::basicPick(int kind)
+{
+    const QString last = QString::fromUtf8(a2600session_get_str(m_session, "bas_dir", ""));
+    QString path;
+    if (kind == 1) path = QFileDialog::getExistingDirectory(this, QStringLiteral("Import Folder"), last);
+    else if (kind == 2) path = QFileDialog::getOpenFileName(this, QStringLiteral("Load Map"), last,
+                                                            QStringLiteral("bB listings (*.lst);;All files (*)"));
+    else path = QFileDialog::getOpenFileName(this, QStringLiteral("Import File"), last,
+                                             QStringLiteral("batari Basic source (*.bas);;All files (*)"));
+    if (path.isEmpty()) return;
+    a2600session_set_str(m_session, "bas_dir", (kind == 1 ? path : QFileInfo(path).absolutePath()).toUtf8().constData());
+    a2600session_settings_flush(m_session);
+    if (kind == 2) {
+        const int n = a2600srcmap_load_map(a2600srcmap_shared(), path.toUtf8().constData());
+        m_basNote->setText(n < 0 ? QStringLiteral("Could not read that listing.")
+                                 : QStringLiteral("%1 line%2 with code, from %3.").arg(n).arg(n == 1 ? QString() : QStringLiteral("s"))
+                                       .arg(QFileInfo(path).fileName()));
+        m_basGen = ~0u;
+        refreshBasic();
+    } else {
+        basicImported(path, kind == 1);
+    }
+}
+
+/* Rebuilt when the map, a breakpoint or the stop changed; every new stop brings
+ * the machine's line into view, even when the reader has scrolled away. */
+void DebuggerWindow::refreshBasic()
+{
+    a2600srcmap *map = a2600srcmap_shared();
+    const unsigned gen = a2600srcmap_generation(map), dgen = a2600debug_generation(m_dbg);
+    const bool stopped = a2600debug_is_stopped(m_dbg) != 0;
+    const uint64_t serial = a2600debug_stop_serial(m_dbg);
+    const int files = a2600srcmap_file_count(map);
+
+    int pf = -1, pl = 0;
+    if (stopped && a2600debug_line_at_pc(m_dbg, &pf, &pl) != 1) pf = -1, pl = 0;
+    const bool newStop = stopped && serial != m_basSerial;
+    if (stopped) m_basSerial = serial;
+    if (gen == m_basGen && dgen == m_basDbgGen && !newStop && pf == m_basPcFile && pl == m_basPcLine) return;
+
+    if (gen != m_basGen || m_basFiles->count() != files) {
+        const QSignalBlocker block(m_basFiles);
+        m_basFiles->clear();
+        for (int i = 0; i < files; ++i) m_basFiles->addItem(QString::fromUtf8(a2600srcmap_file_name(map, i)));
+        if (m_basFile >= files) m_basFile = -1;
+        if (m_basFile < 0 && files > 0) {       /* the first file with any code */
+            m_basFile = 0;
+            for (int i = 0; i < files && m_basFile == 0; ++i)
+                for (int l = 1, n = a2600srcmap_line_count(map, i); l <= n; ++l)
+                    if (a2600srcmap_line_has_code(map, i, l)) { m_basFile = i; break; }
+        }
+        m_basFiles->setCurrentIndex(m_basFile);
+        if (files == 0)
+            m_basNote->setText(QStringLiteral("Import a .bas file, or a folder of them: its listing (.lst) puts each line at its address."));
+    }
+    if (pf >= 0 && pf != m_basFile && newStop) {       /* followed into another file */
+        m_basFile = pf;
+        m_basFiles->setCurrentIndex(pf);
+    }
+    m_basGen = gen;
+    m_basDbgGen = dgen;
+
+    QString text;
+    QList<int> on, off, dim;
+    const int n = m_basFile >= 0 ? a2600srcmap_line_count(map, m_basFile) : 0;
+    text.reserve(n * 48);
+    for (int i = 1; i <= n; ++i) {
+        const bool code = a2600srcmap_line_has_code(map, m_basFile, i) != 0;
+        const int state = code ? a2600debug_line_break_state(m_dbg, m_basFile, i) : 0;
+        if (state == 1) on << i - 1; else if (state == 2) off << i - 1;
+        if (!code) dim << i - 1;
+        text += QStringLiteral("%1 %2  %3\n").arg(dotFor(state)).arg(i, 5).arg(QString::fromUtf8(a2600srcmap_line_text(map, m_basFile, i)));
+    }
+    const int top = m_basView->verticalScrollBar()->value();
+    if (m_basView->toPlainText() != text) {
+        m_basBar = -1;                  /* the document is new: no block wears the bar */
+        m_basView->setPlainText(text);
+        m_basView->verticalScrollBar()->setValue(top);
+    }
+    const bool onPc = pf == m_basFile && pl >= 1 && pl <= n;
+    QList<QTextEdit::ExtraSelection> sel;
+    QTextCharFormat grey;
+    grey.setForeground(m_basView->palette().color(QPalette::Disabled, QPalette::Text));
+    for (int b : dim) {
+        QTextEdit::ExtraSelection s;
+        s.cursor = QTextCursor(m_basView->document()->findBlockByNumber(b));
+        s.cursor.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+        s.format = grey;
+        sel << s;
+    }
+    basicBar(sel, m_basView, m_basBar, onPc ? pl - 1 : -1);
+    auto dot = [&](int b, const QColor &c) {
+        QTextCharFormat f;
+        f.setForeground(b == pl - 1 && onPc ? accentInk() : c);
+        sel << spanSelection(m_basView, b, 0, 1, f);
+    };
+    for (int b : on) dot(b, QColor(0xe0, 0x1b, 0x24));
+    for (int b : off) dot(b, QColor(0x9a, 0x99, 0x96));
+    m_basView->setExtraSelections(sel);
+
+    const int line = onPc ? pl : 0;
+    if (line != m_basPcLine || m_basPcFile != pf || (newStop && line)) {
+        m_basPcLine = line;
+        m_basPcFile = pf;
+        basicScrollToPc();
+    }
+}
+
 /* The Video tab takes its own snapshot; a stopped machine redraws only when
  * the core says something changed. */
 void DebuggerWindow::refreshVideo(bool force)
@@ -1585,6 +1878,7 @@ void DebuggerWindow::refreshPage(int page, bool live)
 {
     switch (page) {
     case TAB_DISASM: if (!live) refreshDisasm(); break;
+    case TAB_BASIC: refreshBasic(); break;
     case TAB_MEMORY: refreshMem(); break;
     case TAB_VIDEO: refreshVideo(std::exchange(m_videoForce, false)); break;
     case TAB_BREAKS: refreshBps(); break;
@@ -1685,6 +1979,12 @@ void DebuggerWindow::settleAndSync()
 void DebuggerWindow::tick()
 {
     if (!isVisible()) return;
+    applyEnvBreak();
+    {
+        a2600srcmap_import_result res;
+        if (a2600debug_basic_auto_import(m_dbg, &res) == 1) basicNote(res, false);
+    }
+    if (a2600srcmap_generation(a2600srcmap_shared()) != m_basGen && tabVisible(TAB_BASIC)) refreshBasic();
     const unsigned gen = a2600debug_generation(m_dbg);
     const bool stopped = a2600debug_is_stopped(m_dbg) != 0;
     if (gen != m_seenGen || stopped != m_wasStopped || a2600debug_stop_serial(m_dbg) != m_seenSerial) {
@@ -2145,9 +2445,9 @@ void DebuggerWindow::popOut(int tab)
     /* the stepping keys work in the window too */
     new QShortcut(QKeySequence(Qt::Key_F1), win, [win] { a2600HelpFor(win); });
     new QShortcut(QKeySequence(Qt::Key_F5), win, [this] { toggleRun(); });
-    new QShortcut(QKeySequence(Qt::Key_F7), win, [this] { stepAnd([this] { a2600debug_step(m_dbg); }); });
-    new QShortcut(QKeySequence(Qt::Key_F8), win, [this] { stepAnd([this] { a2600debug_step_over(m_dbg); }); });
-    new QShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F8), win, [this] { stepAnd([this] { a2600debug_step_out(m_dbg); }); });
+    new QShortcut(QKeySequence(Qt::Key_F7), win, [this] { stepAnd([this] { doStep(); }); });
+    new QShortcut(QKeySequence(Qt::Key_F8), win, [this] { stepAnd([this] { doStepOver(); }); });
+    new QShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F8), win, [this] { stepAnd([this] { doStepOut(); }); });
     if (isVisible()) win->show();
     if (tab == TAB_VIDEO) m_videoForce = true;
     if (tab == TAB_HISTORY) m_hSeen[1] = -1;
@@ -2188,6 +2488,17 @@ bool DebuggerWindow::eventFilter(QObject *obj, QEvent *e)
             m_conIn->setText(m_historyPos < m_history.size() ? m_history.at(m_historyPos) : QString());
             return true;
         }
+    }
+    if (m_basView && obj == m_basView->viewport()) {
+        /* A click on a line toggles its breakpoint; nothing else moves the cursor */
+        if (e->type() == QEvent::MouseButtonPress || e->type() == QEvent::MouseButtonDblClick) {
+            auto *me = static_cast<QMouseEvent *>(e);
+            if (me->button() == Qt::LeftButton && e->type() == QEvent::MouseButtonPress)
+                basicToggleAt(m_basView->cursorForPosition(me->position().toPoint()).blockNumber() + 1);
+            return true;
+        }
+        if (e->type() == QEvent::MouseButtonRelease || e->type() == QEvent::MouseMove) return true;
+        return QMainWindow::eventFilter(obj, e);
     }
     if (m_disasm && obj == m_disasm->viewport()) {
         /* A click selects a line (Run to Cursor); a click on its left edge,
@@ -2245,9 +2556,9 @@ void DebuggerWindow::keyPressEvent(QKeyEvent *e)
     if (e->isAutoRepeat() && (e->key() == Qt::Key_F5 || e->key() == Qt::Key_F9 || e->key() == Qt::Key_F12)) return;
     switch (e->key()) {
     case Qt::Key_F5: toggleRun(); break;
-    case Qt::Key_F7: stepAnd([this] { a2600debug_step(m_dbg); }); break;
-    case Qt::Key_F8: stepAnd(shift ? std::function<void()>([this] { a2600debug_step_out(m_dbg); })
-                                   : std::function<void()>([this] { a2600debug_step_over(m_dbg); })); break;
+    case Qt::Key_F7: stepAnd([this] { doStep(); }); break;
+    case Qt::Key_F8: stepAnd(shift ? std::function<void()>([this] { doStepOut(); })
+                                   : std::function<void()>([this] { doStepOver(); })); break;
     case Qt::Key_F9: toggleSelected(); break;
     default: hide(); break;     /* F12 */
     }

@@ -156,8 +156,8 @@ class DebuggerTest : public QObject {
             if (c->text() == text) return c;
         return nullptr;
     }
-    QTableWidget *bpTable() { return m_tabs->widget(3)->findChild<QTableWidget *>(); }
-    QPlainTextEdit *memView() { return m_tabs->widget(2)->findChild<QPlainTextEdit *>(); }
+    QTableWidget *bpTable() { return m_tabs->widget(4)->findChild<QTableWidget *>(); }
+    QPlainTextEdit *memView() { return m_tabs->widget(3)->findChild<QPlainTextEdit *>(); }
 
     void waitStopped()
     {
@@ -267,7 +267,7 @@ private slots:
         QVERIFY(QTest::qWaitForWindowExposed(m_win));
         m_tabs = m_win->findChild<QTabWidget *>();
         QVERIFY(m_tabs);
-        QCOMPARE(m_tabs->currentIndex(), 5);
+        QCOMPARE(m_tabs->currentIndex(), 6);
         QCOMPARE(a2600watch_count(), 3);                      /* two watches and the break-on-change one */
         a2600debug_breakpoint list[4];
         QCOMPARE(a2600debug_bp_list(m_d, list, 4), 1);
@@ -301,7 +301,7 @@ private slots:
         QStringList names;
         for (int i = 0; i < m_tabs->count(); ++i) names << m_tabs->tabText(i);
         QCOMPARE(names, (QStringList{ QStringLiteral("Console"), QStringLiteral("Disassembly"),
-                                      QStringLiteral("Memory"), QStringLiteral("Breakpoints"),
+                                      QStringLiteral("BASIC"), QStringLiteral("Memory"), QStringLiteral("Breakpoints"),
                                       QStringLiteral("Watches"), QStringLiteral("Cart && I/O"),
                                       QStringLiteral("Trace"), QStringLiteral("History"),
                                       QStringLiteral("Video"), QStringLiteral("Sound"),
@@ -468,7 +468,7 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(statusLabel()->text().contains(QLatin1String("(afterwards)")), 2000);
 
         /* the Symbols tab lists them, filtered; activating a row opens the Disassembly there */
-        m_tabs->setCurrentIndex(10);
+        m_tabs->setCurrentIndex(11);
         QTableWidget *table = m_tabs->currentWidget()->findChild<QTableWidget *>();
         QLineEdit *filter = m_tabs->currentWidget()->findChild<QLineEdit *>();
         QVERIFY(table && filter);
@@ -492,7 +492,7 @@ private slots:
         QCOMPARE(m_tabs->currentIndex(), 1);
         QVERIFY(!check(QStringLiteral("Follow PC"))->isChecked());
         QVERIFY(lineOf(disasmView(), rom[1]) >= 0);
-        m_tabs->setCurrentIndex(10);
+        m_tabs->setCurrentIndex(11);
         filter->clear();
         QTRY_COMPARE_WITH_TIMEOUT(table->rowCount(), all, 2000);
 
@@ -675,7 +675,7 @@ private slots:
 
     void registersFlagsMemory()
     {
-        m_tabs->setCurrentIndex(2);
+        m_tabs->setCurrentIndex(3);
         QTRY_VERIFY_WITH_TIMEOUT(m_tabs->currentWidget()->isVisible(), 1000);
         QList<QLineEdit *> regs;
         for (QLineEdit *e : m_win->findChildren<QLineEdit *>())
@@ -765,7 +765,7 @@ private slots:
 
     void breakpointsTab()
     {
-        m_tabs->setCurrentIndex(3);
+        m_tabs->setCurrentIndex(4);
         QTableWidget *t = bpTable();
         QVERIFY(t);
         QTRY_VERIFY_WITH_TIMEOUT(m_tabs->currentWidget()->isVisible(), 1000);
@@ -896,7 +896,7 @@ private slots:
     void readWatchpoint()
     {
         QVERIFY(a2600debug_bp_add(m_d, A2600DEBUG_BP_READ, kData, kData, A2600DEBUG_ANY_BANK, "") >= 0);
-        m_tabs->setCurrentIndex(3);
+        m_tabs->setCurrentIndex(4);
         QTest::keyClick(m_win, Qt::Key_F5);
         QTRY_VERIFY_WITH_TIMEOUT(a2600debug_is_stopped(m_d), 3000);
         QTRY_VERIFY2_WITH_TIMEOUT(statusLabel()->text().contains(QLatin1String("RTrap")), why().constData(), 2000);
@@ -911,7 +911,7 @@ private slots:
     {
         a2600watch_clear();
         a2600debug_write(m_d, 0xC0, 0x42);
-        m_tabs->setCurrentIndex(4);
+        m_tabs->setCurrentIndex(5);
         QTRY_VERIFY_WITH_TIMEOUT(m_tabs->currentWidget()->isVisible(), 1000);
         QTableWidget *t = m_tabs->currentWidget()->findChild<QTableWidget *>();
         QLineEdit *e = m_tabs->currentWidget()->findChild<QLineEdit *>();
@@ -956,7 +956,7 @@ private slots:
         QPushButton *mem = buttonOf(1, QStringLiteral("Memory"));
         QVERIFY(mem);
         QTest::mouseClick(mem, Qt::LeftButton);
-        QCOMPARE(m_tabs->currentIndex(), 2);
+        QCOMPARE(m_tabs->currentIndex(), 3);
         QVERIFY(memView()->toPlainText().contains(QStringLiteral("$00D0: ")));
         QVERIFY(!memView()->extraSelections().isEmpty());
         /* and every watch is marked in the dump, in its own colour */
@@ -965,7 +965,7 @@ private slots:
             watched |= s.format.background().color() == QColor(0x1c, 0x71, 0xd8);
         QVERIFY(watched);
 
-        m_tabs->setCurrentIndex(4);
+        m_tabs->setCurrentIndex(5);
         QTest::mouseClick(buttonOf(1, QStringLiteral("Remove")), Qt::LeftButton);
         QTRY_COMPARE_WITH_TIMEOUT(t->rowCount(), 1, 2000);
         QCOMPARE(a2600watch_count(), 1);
@@ -980,7 +980,7 @@ private slots:
         const uint8_t pat[4] = { 0xDE, 0xEE, 0xDE, 0xEE };
         for (int i = 0; i < 4; ++i) a2600debug_write(m_d, (uint16_t)(0xD0 + i), pat[i]);
         for (int i = 0; i < 4; ++i) a2600debug_write(m_d, (uint16_t)(0xE0 + i), pat[i]);
-        m_tabs->setCurrentIndex(2);
+        m_tabs->setCurrentIndex(3);
         QTRY_VERIFY_WITH_TIMEOUT(m_tabs->currentWidget()->isVisible(), 1000);
         QLineEdit *go = entryIs(QStringLiteral("$80, label or lo-hi"));
         typeInto(go, QStringLiteral("D0-D3"));
@@ -1033,11 +1033,11 @@ private slots:
     {
         a2600debug_trace_enable(m_d, 0);
         a2600debug_trace_clear(m_d);
-        m_tabs->setCurrentIndex(6);
+        m_tabs->setCurrentIndex(7);
         QTRY_VERIFY_WITH_TIMEOUT(m_tabs->currentWidget()->isVisible(), 1000);
         QPushButton *rec = m_tabs->currentWidget()->findChild<QPushButton *>();
         QVERIFY(rec && rec->text() == QLatin1String("Record"));
-        QPushButton *rec2 = m_tabs->widget(7)->findChild<QPushButton *>();
+        QPushButton *rec2 = m_tabs->widget(8)->findChild<QPushButton *>();
         QVERIFY(rec2 && rec2 != rec);
         QVERIFY(!rec->isChecked());
         QTest::mouseClick(rec, Qt::LeftButton);
@@ -1052,7 +1052,7 @@ private slots:
         waitStopped();
         QTRY_VERIFY_WITH_TIMEOUT(a2600debug_trace_count(m_d) > 20, 2000);
         /* History shows the same ring, oldest first, at the stop */
-        m_tabs->setCurrentIndex(7);
+        m_tabs->setCurrentIndex(8);
         auto *hist = m_tabs->currentWidget()->findChild<QPlainTextEdit *>();
         QTRY_VERIFY_WITH_TIMEOUT(hist->toPlainText().contains(QStringLiteral("ADC")), 2000);
         QVERIFY(hist->toPlainText().count(QLatin1Char('\n')) < 2000);
@@ -1081,20 +1081,20 @@ private slots:
         QCOMPARE(a2600debug_trace_count(m_d), 0);
         QTRY_VERIFY_WITH_TIMEOUT(!hist->toPlainText().contains(QStringLiteral("ADC")), 2000);
         /* and off, from either tab */
-        QTest::mouseClick(m_tabs->widget(7)->findChild<QPushButton *>(), Qt::LeftButton);
+        QTest::mouseClick(m_tabs->widget(8)->findChild<QPushButton *>(), Qt::LeftButton);
         QVERIFY(!a2600debug_trace_enabled(m_d));
-        QTRY_VERIFY_WITH_TIMEOUT(!m_tabs->widget(6)->findChild<QPushButton *>()->isChecked(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(!m_tabs->widget(7)->findChild<QPushButton *>()->isChecked(), 2000);
         m_tabs->setCurrentIndex(0);
     }
 
     /* Any tab can leave for a window of its own and come back to its place. */
     void popOutAndDock()
     {
-        m_tabs->setCurrentIndex(3);
+        m_tabs->setCurrentIndex(4);
         QPushButton *pop = button(QStringLiteral("Pop Out"));
         QVERIFY(pop);
         QTest::mouseClick(pop, Qt::LeftButton);
-        QCOMPARE(m_tabs->count(), 11);
+        QCOMPARE(m_tabs->count(), 12);
         QWidget *win = nullptr;
         for (QWidget *w : QApplication::topLevelWidgets())
             if (w->windowTitle() == QLatin1String("Atari 2600 Debugger - Breakpoints")) win = w;
@@ -1112,21 +1112,21 @@ private slots:
             if (b->text() == QLatin1String("Dock")) dockBtn = b;
         QVERIFY(dockBtn);
         QTest::mouseClick(dockBtn, Qt::LeftButton);
-        QTRY_COMPARE_WITH_TIMEOUT(m_tabs->count(), 12, 1000);
-        QCOMPARE(m_tabs->tabText(3), QStringLiteral("Breakpoints"));       /* back in its place */
+        QTRY_COMPARE_WITH_TIMEOUT(m_tabs->count(), 13, 1000);
+        QCOMPARE(m_tabs->tabText(4), QStringLiteral("Breakpoints"));       /* back in its place */
         /* closing the window docks it too; several can be out, but one stays */
-        m_tabs->setCurrentIndex(5);
+        m_tabs->setCurrentIndex(6);
         QTest::mouseClick(pop, Qt::LeftButton);
-        QCOMPARE(m_tabs->count(), 11);
-        QCOMPARE(m_tabs->tabText(5), QStringLiteral("Trace"));
+        QCOMPARE(m_tabs->count(), 12);
+        QCOMPARE(m_tabs->tabText(6), QStringLiteral("Trace"));
         QWidget *cart = nullptr;
         for (QWidget *w : QApplication::topLevelWidgets())
             if (w->windowTitle() == QLatin1String("Atari 2600 Debugger - Cart & I/O")) cart = w;
         QVERIFY(cart);
         cart->close();
-        QTRY_COMPARE_WITH_TIMEOUT(m_tabs->count(), 12, 1000);
-        QCOMPARE(m_tabs->tabText(5), QStringLiteral("Cart && I/O"));
-        for (int i = 0; i < 11; ++i) {
+        QTRY_COMPARE_WITH_TIMEOUT(m_tabs->count(), 13, 1000);
+        QCOMPARE(m_tabs->tabText(6), QStringLiteral("Cart && I/O"));
+        for (int i = 0; i < 12; ++i) {
             m_tabs->setCurrentIndex(0);
             QTest::mouseClick(pop, Qt::LeftButton);
         }
@@ -1135,13 +1135,13 @@ private slots:
         QCOMPARE(m_tabs->count(), 1);
         for (QWidget *w : QApplication::topLevelWidgets())
             if (w->windowTitle().startsWith(QLatin1String("Atari 2600 Debugger - "))) w->close();
-        QTRY_COMPARE_WITH_TIMEOUT(m_tabs->count(), 12, 1000);
+        QTRY_COMPARE_WITH_TIMEOUT(m_tabs->count(), 13, 1000);
         QStringList names;
         for (int i = 0; i < m_tabs->count(); ++i) names << m_tabs->tabText(i);
         QCOMPARE(names.first(), QStringLiteral("Console"));
         QCOMPARE(names.last(), QStringLiteral("FujiNet"));
-        QCOMPARE(names.at(5), QStringLiteral("Cart && I/O"));
-        QCOMPARE(names.at(10), QStringLiteral("Symbols"));
+        QCOMPARE(names.at(6), QStringLiteral("Cart && I/O"));
+        QCOMPARE(names.at(11), QStringLiteral("Symbols"));
     }
 
     /* A new stop pulls every view back to the spot from wherever it was
@@ -1161,13 +1161,13 @@ private slots:
         QApplication::sendEvent(v->viewport(), &wheel);
         QVERIFY(!follow->isChecked());
         /* Memory scrolled to the top */
-        m_tabs->setCurrentIndex(2);
+        m_tabs->setCurrentIndex(3);
         memView()->verticalScrollBar()->setValue(0);
         m_tabs->setCurrentIndex(1);
         QTest::keyClick(m_win, Qt::Key_F7);
         QTRY_VERIFY_WITH_TIMEOUT(follow->isChecked(), 2000);
         QTRY_VERIFY_WITH_TIMEOUT(lineOf(v, pcOf(m_d)) >= 0, 2000);
-        m_tabs->setCurrentIndex(3);
+        m_tabs->setCurrentIndex(4);
         QLabel *stop = nullptr;
         for (QLabel *l : m_tabs->currentWidget()->findChildren<QLabel *>())
             if (l->text().startsWith(QLatin1String("Stopped"))) stop = l;
@@ -1183,7 +1183,7 @@ private slots:
     /* Cart & I/O: the cartridge, the RIOT, the memory map once, the state slots and the file saves. */
     void cartAndIo()
     {
-        m_tabs->setCurrentIndex(5);
+        m_tabs->setCurrentIndex(6);
         QTRY_VERIFY_WITH_TIMEOUT(m_tabs->currentWidget()->isVisible(), 1000);
         auto *io = m_tabs->currentWidget()->findChild<QPlainTextEdit *>();
         QVERIFY(io);
@@ -1223,7 +1223,7 @@ private slots:
     void soundAndFujinet()
     {
         /* Sound: the TIA's two channels */
-        m_tabs->setCurrentIndex(9);
+        m_tabs->setCurrentIndex(10);
         QTRY_VERIFY_WITH_TIMEOUT(m_tabs->currentWidget()->isVisible(), 1000);
         auto *sound = qobject_cast<QPlainTextEdit *>(m_tabs->currentWidget());
         QVERIFY(sound);
@@ -1233,7 +1233,7 @@ private slots:
         QVERIFY(sound->toPlainText().contains(QStringLiteral("AUDF")));
         shot(QStringLiteral("sound"));
         /* FujiNet: empty without the runtime, and says so */
-        m_tabs->setCurrentIndex(11);
+        m_tabs->setCurrentIndex(12);
         QTRY_VERIFY_WITH_TIMEOUT(m_tabs->currentWidget()->isVisible(), 1000);
         bool note = false;
         for (QLabel *l : m_tabs->currentWidget()->findChildren<QLabel *>())
@@ -1266,7 +1266,7 @@ private slots:
         waitStopped();
         QTest::qWait(100);
 
-        m_tabs->setCurrentIndex(8);
+        m_tabs->setCurrentIndex(9);
         QWidget *page = m_tabs->currentWidget();
         QTRY_VERIFY_WITH_TIMEOUT(page->isVisible(), 1000);
         auto combos = page->findChildren<QComboBox *>();
@@ -1493,6 +1493,76 @@ private slots:
         DebuggerWindow::toggleFor(nullptr, m_s);
         QVERIFY(m_win->isVisible());
         waitStopped();
+    }
+    /* The BASIC tab: import the batari Basic fixture, click a line for its breakpoint, run to it,
+     * step by line. Last, because it swaps the cartridge for the fixture's. */
+    void basicTab()
+    {
+        const QByteArray dir = QByteArray(A2600_BBASIC_DIR);
+        QCOMPARE(a2600session_load_cart(m_s, (dir + "/main.bas.bin").constData()), 0);
+        QTest::qWait(300);
+        a2600debug_stop(m_d);
+        waitStopped();
+        a2600debug_breakpoint_clear(m_d);
+        a2600srcmap_import_result res;
+        QCOMPARE(a2600debug_basic_import(m_d, (dir + "/main.bas").constData(), &res), 0);
+        QVERIFY(res.mapped > 5);
+        m_tabs->setCurrentIndex(2);
+        QCOMPARE(m_tabs->tabText(2), QStringLiteral("BASIC"));
+        QPlainTextEdit *v = m_tabs->currentWidget()->findChild<QPlainTextEdit *>();
+        QVERIFY(v);
+        QComboBox *files = m_tabs->currentWidget()->findChild<QComboBox *>();
+        QVERIFY(files);
+        QTRY_VERIFY_WITH_TIMEOUT(files->count() == 1 && v->document()->blockCount() > 10, 2000);
+        QVERIFY(files->itemText(0).endsWith(QLatin1String("main.bas")));
+        for (const char *label : { "Import File", "Import Folder", "Load Map" }) QVERIFY2(button(QString::fromUtf8(label)), label);
+        QVERIFY(v->toPlainText().contains(QLatin1String("COLUBK")));
+        QCOMPARE(m_win->property("a2600HelpContext").toString(), QStringLiteral("debugger/basic"));
+
+        auto bg = [&](int line) { return v->document()->findBlockByNumber(line - 1).blockFormat().background().color(); };
+        auto gutter = [&](int line) { return v->document()->findBlockByNumber(line - 1).text().left(1); };
+        QCOMPARE(a2600debug_line_break_toggle(m_d, 0, 12), -1);          /* a label line: no code, nothing to toggle */
+        QTest::mouseClick(v->viewport(), Qt::LeftButton, {}, lineAt(v, 11, 0));
+        QCOMPARE(a2600debug_line_break_state(m_d, 0, 12), 0);
+
+        /* a click toggles; the dot follows */
+        QTest::mouseClick(v->viewport(), Qt::LeftButton, {}, lineAt(v, 5, 12));
+        QCOMPARE(a2600debug_line_break_state(m_d, 0, 6), 1);
+        QTRY_COMPARE_WITH_TIMEOUT(gutter(6), QStringLiteral("\u25CF"), 2000);
+        QTest::mouseClick(v->viewport(), Qt::LeftButton, {}, lineAt(v, 5, 0));
+        QCOMPARE(a2600debug_line_break_state(m_d, 0, 6), 0);
+        QTRY_COMPARE_WITH_TIMEOUT(gutter(6), QStringLiteral(" "), 2000);
+        QTest::mouseClick(v->viewport(), Qt::LeftButton, {}, lineAt(v, 5, 0));
+        QCOMPARE(a2600debug_line_break_state(m_d, 0, 6), 1);
+
+        /* run to it: the bar is on line 6 */
+        a2600debug_resume(m_d);
+        QTRY_VERIFY_WITH_TIMEOUT(a2600debug_is_stopped(m_d), 3000);
+        int file = -1, line = 0;
+        QCOMPARE(a2600debug_line_at_pc(m_d, &file, &line), 1);
+        QCOMPARE(line, 6);
+        QTRY_COMPARE_WITH_TIMEOUT(bg(6), kAccent, 2000);
+        QCOMPARE(v->document()->findBlockByNumber(7 - 1).blockFormat().background().style(), Qt::NoBrush);
+
+        /* Step goes by line here: line 7, and the bar moves */
+        QTest::mouseClick(button(QStringLiteral("Step (F7)")), Qt::LeftButton);
+        QTRY_COMPARE_WITH_TIMEOUT(bg(7), kAccent, 2000);
+        QCOMPARE(a2600debug_line_at_pc(m_d, &file, &line), 1);
+        QCOMPARE(line, 7);
+        QVERIFY(why().contains("main.bas:7"));
+        QTest::keyClick(m_win, Qt::Key_F8);                              /* over the gosub's line: line 8 */
+        QTRY_COMPARE_WITH_TIMEOUT(bg(8), kAccent, 2000);
+        QCOMPARE(v->document()->findBlockByNumber(7 - 1).blockFormat().background().style(), Qt::NoBrush);
+        a2600debug_breakpoint_clear(m_d);
+        QTRY_COMPARE_WITH_TIMEOUT(gutter(6), QStringLiteral(" "), 2000);
+
+        /* on another tab Step is an instruction again */
+        m_tabs->setCurrentIndex(1);
+        QTest::keyClick(m_win, Qt::Key_F7);
+        QTRY_VERIFY_WITH_TIMEOUT(a2600debug_is_stopped(m_d), 2000);
+        QVERIFY(!why().contains("BASIC line"));
+        shot(QStringLiteral("basic"));
+        m_tabs->setCurrentIndex(0);
     }
 };
 

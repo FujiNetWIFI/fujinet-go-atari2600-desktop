@@ -58,6 +58,7 @@ private:
     QWidget *buildRegs();
     QWidget *buildStatesBox();
     QWidget *buildDisasm();
+    QWidget *buildBasic();
     QWidget *buildMemory();
     QWidget *buildSearchBar();
     QWidget *buildVideo();
@@ -72,6 +73,17 @@ private:
     void refreshStatus();
     void refreshCpu();
     void refreshMem();
+    void refreshBasic();
+    void basicToggleAt(int line);
+    void applyEnvBreak();
+    void basicScrollToPc();
+    void basicNote(const a2600srcmap_import_result &r, bool failed);
+    void basicImported(const QString &path, bool folder);
+    void basicPick(int kind);
+    bool basicTab() const;
+    void doStep();
+    void doStepOver();
+    void doStepOut();
     void refreshDisasm();
     void refreshVideo(bool force);
     void refreshBps();
@@ -173,6 +185,17 @@ private:
     int m_selected = -1;                /* the selected line's address, or -1 */
     int m_wheel = 0;                    /* wheel travel not yet a row */
     std::vector<uint16_t> m_lineAddr;
+
+    /* BASIC: the imported source (a2600srcmap_shared) */
+    QLabel *m_basNote = nullptr;
+    QComboBox *m_basFiles = nullptr;
+    QPlainTextEdit *m_basView = nullptr;
+    int m_basFile = -1;                 /* the file shown, -1 none */
+    unsigned m_basGen = ~0u, m_basDbgGen = ~0u;
+    int m_basBar = -1;                  /* the block wearing the bar */
+    uint64_t m_basSerial = 0;           /* the stop last followed */
+    int m_basPcLine = 0, m_basPcFile = -1;
+    QString m_envBreak;                 /* A2600_BASIC_BREAK, until it holds */
 
     /* video */
     VideoTab *m_video = nullptr;

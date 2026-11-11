@@ -85,7 +85,8 @@ if(Qt6Test_FOUND)
   target_include_directories(debugger_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_compile_options(debugger_test PRIVATE -Wall -Wextra)
   target_compile_definitions(debugger_test PRIVATE
-    A2600_SOURCE_ICON_DIR="${CMAKE_SOURCE_DIR}/data/icons")
+    A2600_SOURCE_ICON_DIR="${CMAKE_SOURCE_DIR}/data/icons"
+    A2600_BBASIC_DIR="${CMAKE_SOURCE_DIR}/core/tests/data/bbasic")
   if(WITH_WEBVIEW AND Qt6WebEngineWidgets_FOUND)
     target_link_libraries(debugger_test PRIVATE Qt6::WebEngineWidgets)
     target_compile_definitions(debugger_test PRIVATE HAVE_WEBENGINE=1)
