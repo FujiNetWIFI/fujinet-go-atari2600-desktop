@@ -6,20 +6,22 @@
  * Tabs (A2600_DEBUGGER_TAB takes the number, or the start of the name):
  *   0 Console          Stella's prompt: every parser command, Tab completion, history
  *   1 Disassembly      bank chooser, breakpoint gutter, follow-PC, jump box, selectable row
- *   2 Memory           the 13-bit bus ($0000-$1FFF) with go-to (a range is highlighted),
+ *   2 BASIC            a batari Basic program by its source: a red dot for a breakpoint, the
+ *                      line the machine is on, Step / Over / Out by line while it shows
+ *   3 Memory           the 13-bit bus ($0000-$1FFF) with go-to (a range is highlighted),
  *                      search (hex or text, next and previous) and poke
- *   3 Breakpoints      why it stopped; execute (with a bank), read/write/access,
+ *   4 Breakpoints      why it stopped; execute (with a bank), read/write/access,
  *                      conditions, hit counts
- *   4 Watches          addresses, labels and ranges with their live values
- *   5 Cart & I/O       the cartridge, RIOT, the memory map, save states and file saves
- *   6 Trace            the instruction ring, live while the machine runs
- *   7 History          the same ring, read when the machine stops
- *   8 Video            the picture (four views, overlays, hover/pin), and pixel,
+ *   5 Watches          addresses, labels and ranges with their live values
+ *   6 Cart & I/O       the cartridge, RIOT, the memory map, save states and file saves
+ *   7 Trace            the instruction ring, live while the machine runs
+ *   8 History          the same ring, read when the machine stops
+ *   9 Video            the picture (four views, overlays, hover/pin), and pixel,
  *                      registers (with the TIA set/strobe controls), colours, lines,
  *                      writes and timing sections
- *   9 Sound            the TIA's two channels
- *  10 Symbols          every known symbol, filtered; a row opens the disassembly
- *  11 FujiNet          every FujiBus packet, with the link state, with hex
+ *  10 Sound            the TIA's two channels
+ *  11 Symbols          every known symbol, filtered; a row opens the disassembly
+ *  12 FujiNet          every FujiBus packet, with the link state, with hex
  * The registers (editable) and flags sit under the tabs on every tab. Any
  * tab can be popped out into a window of its own (Pop Out, then Dock; closing
  * that window docks it); one tab always stays in the main window.
@@ -36,7 +38,8 @@
  * to the PC and the trace and history to their newest line. Environment
  * hooks read at creation: A2600_DEBUGGER_TAB, A2600_DEBUGGER_WATCH,
  * A2600_DEBUGGER_WATCH_BREAK, A2600_DEBUGGER_MEM_GOTO, A2600_DEBUGGER_HISTORY,
- * A2600_DEBUGGER_POPOUT (and A2600_DEBUGGER_VIDEO_* for the Video tab).
+ * A2600_DEBUGGER_POPOUT, A2600_BASIC_IMPORT=<.bas file or folder>, A2600_BASIC_BREAK=name.bas:line
+ * (and A2600_DEBUGGER_VIDEO_* for the Video tab).
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -62,7 +65,7 @@
 #define TRACE_MAX 512
 #define HIST_SHOWN 2000   /* lines on a Trace or History page */
 #define HIST_READ 65536   /* the ring */
-#define NTABS 12
+#define NTABS 13
 #define SYMBOLS_SHOWN 2000   /* rows in the Symbols list */
 
 typedef struct {
@@ -158,6 +161,18 @@ typedef struct {
     gboolean h_sync;          /* the Record toggles are being set from the engine */
     int trace_ticks;
 
+    /* basic: the source of a batari Basic program, one buffer line per source line */
+    a2600srcmap *srcmap;
+    GtkLabel *bas_note;
+    GtkDropDown *bas_files;
+    GtkStringList *bas_names;
+    GtkTextView *bas_view;
+    int bas_file;             /* index into the map; -1 = nothing shown */
+    unsigned bas_gen;         /* a2600srcmap_generation the file list was built from */
+    gboolean bas_syncing;     /* the dropdown is being set by us, not the user */
+    gboolean bas_recentre;    /* a new stop: show the machine's line, in its file */
+    char *bas_break;          /* A2600_BASIC_BREAK, applied once the machine exists */
+
     /* fujinet */
     GtkLabel *fuji_note;
     GtkTextView *fuji_text, *fuji_state;
@@ -175,10 +190,10 @@ static const struct { const char *name; int reg; int digits; } k_regs[NREGS] = {
 
 /* The tabs, in order; A2600_DEBUGGER_TAB takes a number or the start of a name. */
 static const char *const k_tab_names[NTABS] = {
-    "Console", "Disassembly", "Memory", "Breakpoints", "Watches", "Cart & I/O", "Trace",
+    "Console", "Disassembly", "BASIC", "Memory", "Breakpoints", "Watches", "Cart & I/O", "Trace",
     "History", "Video", "Sound", "Symbols", "FujiNet",
 };
-enum { TAB_CONSOLE, TAB_DISASM, TAB_MEMORY, TAB_BREAKS, TAB_WATCHES, TAB_CART, TAB_TRACE,
+enum { TAB_CONSOLE, TAB_DISASM, TAB_BASIC, TAB_MEMORY, TAB_BREAKS, TAB_WATCHES, TAB_CART, TAB_TRACE,
        TAB_HISTORY, TAB_VIDEO, TAB_SOUND, TAB_SYMBOLS, TAB_FUJINET };
 
 /* ---- helpers -------------------------------------------------------------- */
@@ -921,6 +936,288 @@ static void disasm_goto(DbgWin *w, int addr)
     }
 }
 
+/* ---- BASIC tab -------------------------------------------------------------- */
+
+/* Step, Over and Out go by BASIC line while this tab is the one in front: the
+ * tab showing in the main window, or its own window when popped out (and no
+ * other popped-out window is the one being used). */
+static gboolean basic_tab_active(DbgWin *w)
+{
+    int t;
+    for (t = 0; t < NTABS; t++)
+        if (t != TAB_BASIC && w->detached[t] && gtk_window_is_active(w->detached[t]))
+            return FALSE;
+    if (w->detached[TAB_BASIC])
+        return gtk_window_is_active(w->detached[TAB_BASIC]);
+    return current_tab(w) == TAB_BASIC;
+}
+
+/* The note under the buttons, from what an import found. */
+static void basic_note(DbgWin *w, const a2600srcmap_import_result *r)
+{
+    g_autofree char *msg = NULL;
+    if (r->mapped > 0) {
+        msg = g_strdup_printf("%d file%s, %d line%s with code, %d symbol%s%s", r->files,
+                              r->files == 1 ? "" : "s", r->mapped, r->mapped == 1 ? "" : "s",
+                              a2600debug_symbols_count(w->dbg),
+                              a2600debug_symbols_count(w->dbg) == 1 ? "" : "s",
+                              r->old_format ? " (old compiler: matched by text)" : "");
+    } else {
+        msg = g_strdup_printf("%d file%s loaded; no listing found: build with 2600basic.sh so the "
+                              ".bas.lst sits beside the .bas, or use Load Map", r->files,
+                              r->files == 1 ? "" : "s");
+    }
+    gtk_label_set_text(w->bas_note, msg);
+}
+
+/* Cheap, and acts once per cartridge path: a cartridge with its source beside it. */
+static void basic_auto_import(DbgWin *w)
+{
+    a2600srcmap_import_result r;
+    if (a2600debug_basic_auto_import(w->dbg, &r) == 1) {
+        w->bas_file = -1;       /* basic_reload picks the first file with code */
+        w->bas_recentre = TRUE;
+        basic_note(w, &r);
+    }
+}
+
+/* A2600_BASIC_BREAK=<name.bas>:<line>: a breakpoint on that line of the file
+ * (by name suffix), set once the machine is there to hold it. */
+static void basic_env_break(DbgWin *w)
+{
+    g_autofree char *name = g_strndup(w->bas_break, (gsize)(strchr(w->bas_break, ':') - w->bas_break));
+    const int line = atoi(strchr(w->bas_break, ':') + 1);
+    int file;
+    g_clear_pointer(&w->bas_break, g_free);
+    for (file = 0; file < a2600srcmap_file_count(w->srcmap); file++)
+        if (g_str_has_suffix(a2600srcmap_file_name(w->srcmap, file), name) &&
+            a2600debug_line_break_state(w->dbg, file, line) == 0)
+            a2600debug_line_break_toggle(w->dbg, file, line);
+}
+
+static void basic_after_import(DbgWin *w, const char *path)
+{
+    a2600srcmap_import_result r;
+    if (a2600debug_basic_import(w->dbg, path, &r) < 0) {
+        gtk_label_set_text(w->bas_note, "Could not read that file or folder.");
+        return;
+    }
+    basic_note(w, &r);
+    w->bas_file = -1;
+    w->bas_recentre = TRUE;
+    refresh_now(w);
+}
+
+/* One buffer line per source line: the breakpoint dot, '>' on the machine's
+ * line, the number, the text. A line with no code is dimmed. */
+static void basic_render(DbgWin *w, int pc_file, int pc_line)
+{
+    GtkTextBuffer *b = gtk_text_view_get_buffer(w->bas_view);
+    GString *str = g_string_new(NULL);
+    GtkTextIter s, e;
+    int n = w->bas_file >= 0 ? a2600srcmap_line_count(w->srcmap, w->bas_file) : 0, i;
+
+    for (i = 1; i <= n; i++) {
+        const int state = a2600debug_line_break_state(w->dbg, w->bas_file, i);
+        const char *src = a2600srcmap_line_text(w->srcmap, w->bas_file, i);
+        g_string_append_printf(str, "%s%c %5d  %s\n",
+                               state == 1 ? "\xe2\x97\x8f" : state == 2 ? "\xe2\x97\x8b" : " ",
+                               pc_file == w->bas_file && i == pc_line ? '>' : ' ', i, src ? src : "");
+    }
+    set_text_at(w->bas_view, str->str, FALSE);
+    g_string_free(str, TRUE);
+    gtk_text_buffer_get_bounds(b, &s, &e);
+    gtk_text_buffer_remove_all_tags(b, &s, &e);
+    for (i = 1; i <= n; i++) {
+        const int state = a2600debug_line_break_state(w->dbg, w->bas_file, i);
+        gtk_text_buffer_get_iter_at_line(b, &s, i - 1);
+        e = s;
+        gtk_text_iter_forward_to_line_end(&e);
+        if (!a2600srcmap_line_has_code(w->srcmap, w->bas_file, i))
+            gtk_text_buffer_apply_tag_by_name(b, "dim", &s, &e);
+        else if (pc_file == w->bas_file && i == pc_line)
+            gtk_text_buffer_apply_tag_by_name(b, "pc", &s, &e);
+        if (state) {
+            e = s;
+            gtk_text_iter_forward_char(&e);
+            gtk_text_buffer_apply_tag_by_name(b, state == 1 ? "bp_on" : "bp_off", &s, &e);
+        }
+    }
+}
+
+static void basic_select_file(DbgWin *w, int file)
+{
+    w->bas_syncing = TRUE;
+    gtk_drop_down_set_selected(w->bas_files, file >= 0 ? (guint)file : GTK_INVALID_LIST_POSITION);
+    w->bas_syncing = FALSE;
+}
+
+static void basic_to_top(DbgWin *w)
+{
+    GtkAdjustment *adj = vadj(w->bas_view);
+    if (adj) gtk_adjustment_set_value(adj, 0);
+}
+
+/* The map changed (an import, a Load Map): the file list. */
+static void basic_reload(DbgWin *w)
+{
+    const int count = a2600srcmap_file_count(w->srcmap);
+    g_autoptr(GPtrArray) names = g_ptr_array_new();
+    int i;
+
+    for (i = 0; i < count; i++)
+        g_ptr_array_add(names, (gpointer)a2600srcmap_file_name(w->srcmap, i));
+    g_ptr_array_add(names, NULL);
+    w->bas_syncing = TRUE;
+    gtk_string_list_splice(w->bas_names, 0, g_list_model_get_n_items(G_LIST_MODEL(w->bas_names)),
+                           (const char *const *)names->pdata);
+    w->bas_syncing = FALSE;
+    if (w->bas_file >= count) w->bas_file = -1;
+    if (w->bas_file < 0 && count > 0) {      /* the first file with any code on it */
+        w->bas_file = 0;
+        for (i = 0; i < count; i++) {
+            const int lines = a2600srcmap_line_count(w->srcmap, i);
+            int l;
+            for (l = 1; l <= lines; l++)
+                if (a2600srcmap_line_has_code(w->srcmap, i, l)) break;
+            if (l <= lines) { w->bas_file = i; break; }
+        }
+    }
+    basic_select_file(w, w->bas_file);
+    if (count == 0)
+        gtk_label_set_text(w->bas_note, "Import a .bas file, or a folder of them; the listing "
+                                        "(.bas.lst) beside it puts each line at its address.");
+    basic_to_top(w);
+}
+
+static void refresh_basic(DbgWin *w)
+{
+    int pc_file = -1, pc_line = 0;
+    unsigned gen = a2600srcmap_generation(w->srcmap);
+
+    if (gen != w->bas_gen) {
+        w->bas_gen = gen;
+        basic_reload(w);
+    }
+    if (a2600debug_is_stopped(w->dbg)) {
+        int file, line;
+        if (a2600debug_line_at_pc(w->dbg, &file, &line)) {
+            pc_file = file;
+            pc_line = line;
+        }
+    }
+    if (w->bas_recentre && pc_file >= 0 && pc_file != w->bas_file) {   /* followed into its file */
+        w->bas_file = pc_file;
+        basic_select_file(w, pc_file);
+        basic_to_top(w);
+    }
+    basic_render(w, pc_file, pc_line);
+    if (w->bas_recentre) {
+        w->bas_recentre = FALSE;
+        if (pc_file == w->bas_file && pc_line > 0) {
+            GtkTextBuffer *b = gtk_text_view_get_buffer(w->bas_view);
+            GtkTextIter it;
+            GtkTextMark *mark;
+            gtk_text_buffer_get_iter_at_line(b, &it, pc_line - 1);
+            mark = gtk_text_buffer_create_mark(b, NULL, &it, TRUE);
+            gtk_text_view_scroll_to_mark(w->bas_view, mark, 0.0, TRUE, 0.0, 0.5);
+            gtk_text_buffer_delete_mark(b, mark);
+        }
+    }
+}
+
+static void on_bas_file_selected(GObject *dd, GParamSpec *ps, gpointer ud)
+{
+    DbgWin *w = ud;
+    const guint sel = gtk_drop_down_get_selected(GTK_DROP_DOWN(dd));
+    (void)ps;
+    if (w->bas_syncing) return;
+    w->bas_file = sel == GTK_INVALID_LIST_POSITION ? -1 : (int)sel;
+    basic_to_top(w);
+    refresh_basic(w);
+}
+
+/* A click on a line with code toggles its breakpoint; the others do nothing. */
+static void on_bas_click(GtkGestureClick *g, int n, double x, double y, gpointer ud)
+{
+    DbgWin *w = ud;
+    GtkTextIter it;
+    int bx, by, line, top, height;
+    (void)g; (void)n;
+    if (w->bas_file < 0) return;
+    gtk_text_view_window_to_buffer_coords(w->bas_view, GTK_TEXT_WINDOW_WIDGET, (int)x, (int)y, &bx, &by);
+    gtk_text_view_get_line_at_y(w->bas_view, &it, by, NULL);
+    gtk_text_view_get_line_yrange(w->bas_view, &it, &top, &height);
+    if (by < top || by >= top + height) return;
+    line = gtk_text_iter_get_line(&it) + 1;
+    if (line > a2600srcmap_line_count(w->srcmap, w->bas_file) ||
+        !a2600srcmap_line_has_code(w->srcmap, w->bas_file, line))
+        return;
+    a2600debug_line_break_toggle(w->dbg, w->bas_file, line);
+    refresh_basic(w);
+}
+
+/* Import File / Import Folder / Load Map. */
+enum { PICK_FILE, PICK_FOLDER, PICK_MAP };
+
+static void on_bas_picked(GObject *src, GAsyncResult *res, gpointer ud)
+{
+    DbgWin *w = ud;
+    const int kind = GPOINTER_TO_INT(g_object_get_data(src, "kind"));
+    g_autoptr(GFile) file = kind == PICK_FOLDER
+        ? gtk_file_dialog_select_folder_finish(GTK_FILE_DIALOG(src), res, NULL)
+        : gtk_file_dialog_open_finish(GTK_FILE_DIALOG(src), res, NULL);
+    g_autofree char *path = file ? g_file_get_path(file) : NULL;
+    g_autofree char *dir = NULL;
+
+    if (!path || w->closing) return;     /* cancelled, or the window went */
+    dir = kind == PICK_FOLDER ? g_strdup(path) : g_path_get_dirname(path);
+    a2600session_set_str(w->session, "bas_dir", dir);     /* the next picker starts here */
+    a2600session_settings_flush(w->session);
+    if (kind == PICK_MAP) {
+        const int n = a2600srcmap_load_map(w->srcmap, path);
+        if (n < 0) {
+            gtk_label_set_text(w->bas_note, "Could not read that listing.");
+        } else {
+            g_autofree char *base = g_path_get_basename(path);
+            g_autofree char *msg = g_strdup_printf("%d source line%s with code, from %s", n,
+                                                   n == 1 ? "" : "s", base);
+            gtk_label_set_text(w->bas_note, msg);
+        }
+        refresh_now(w);
+    } else {
+        basic_after_import(w, path);
+    }
+}
+
+static void on_bas_pick(GtkButton *b, gpointer ud)
+{
+    DbgWin *w = ud;
+    const int kind = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(b), "kind"));
+    GtkFileDialog *dlg = gtk_file_dialog_new();
+    GListStore *filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
+    GtkFileFilter *filter = gtk_file_filter_new();
+    const char *last = a2600session_get_str(w->session, "bas_dir", "");
+
+    gtk_file_filter_set_name(filter, kind == PICK_MAP ? "batari Basic listings" : "batari Basic source");
+    gtk_file_filter_add_suffix(filter, kind == PICK_MAP ? "lst" : "bas");
+    gtk_file_filter_add_pattern(filter, "*");
+    g_list_store_append(filters, filter);
+    g_object_unref(filter);
+    gtk_file_dialog_set_title(dlg, kind == PICK_FOLDER ? "Import Folder" : kind == PICK_MAP ? "Load Map"
+                                                                                           : "Import File");
+    if (kind != PICK_FOLDER) gtk_file_dialog_set_filters(dlg, G_LIST_MODEL(filters));
+    g_object_unref(filters);
+    if (last && last[0]) {
+        g_autoptr(GFile) folder = g_file_new_for_path(last);
+        gtk_file_dialog_set_initial_folder(dlg, folder);
+    }
+    g_object_set_data(G_OBJECT(dlg), "kind", GINT_TO_POINTER(kind));
+    if (kind == PICK_FOLDER) gtk_file_dialog_select_folder(dlg, w->win, NULL, on_bas_picked, w);
+    else gtk_file_dialog_open(dlg, w->win, NULL, on_bas_picked, w);
+    g_object_unref(dlg);
+}
+
 /* ---- symbols ------------------------------------------------------------------ */
 
 /* A row opens the disassembly at its address. */
@@ -1210,6 +1507,7 @@ static void refresh_tab(DbgWin *w, int tab)
     if (w->closing) return;
     switch (tab) {
     case TAB_DISASM: refresh_disasm(w); break;
+    case TAB_BASIC: refresh_basic(w); break;
     case TAB_MEMORY: refresh_mem(w); break;
     case TAB_BREAKS: refresh_bps(w); break;
     case TAB_WATCHES: refresh_watches(w); break;
@@ -1267,6 +1565,7 @@ static void recentre_views(DbgWin *w)
     GtkAdjustment *adj = vadj(w->mem_view);
     int index;
     if (adj) gtk_adjustment_set_value(adj, 0);
+    w->bas_recentre = TRUE;
     for (index = 0; index < 2; index++) {
         w->h_sig[index] = ~(uint64_t)0;
         g_object_set_data(G_OBJECT(w->h_text[index]), "follow", GINT_TO_POINTER(1));
@@ -1289,6 +1588,8 @@ static gboolean tick_refresh(gpointer ud)
         stop_and_refresh(w);
         return G_SOURCE_CONTINUE;
     }
+    basic_auto_import(w);
+    if (w->bas_break && a2600session_is_running(w->session)) basic_env_break(w);
     gen = a2600debug_generation(w->dbg);
     stopped = a2600debug_is_stopped(w->dbg) != 0;
     {   /* a new stop brings the disassembly back to the PC, wherever it was scrolled */
@@ -1361,9 +1662,12 @@ static void on_run(GtkButton *b, gpointer ud)
         settle(w, TRUE); \
         refresh_now(w); \
     }
-STEP_HANDLER(on_step, a2600debug_step(w->dbg))
-STEP_HANDLER(on_step_over, a2600debug_step_over(w->dbg))
-STEP_HANDLER(on_step_out, a2600debug_step_out(w->dbg))
+/* On the BASIC tab the three steppers go by BASIC line. */
+STEP_HANDLER(on_step, basic_tab_active(w) ? a2600debug_step_line(w->dbg) : a2600debug_step(w->dbg))
+STEP_HANDLER(on_step_over, basic_tab_active(w) ? a2600debug_step_line_over(w->dbg)
+                                               : a2600debug_step_over(w->dbg))
+STEP_HANDLER(on_step_out, basic_tab_active(w) ? a2600debug_step_line_out(w->dbg)
+                                              : a2600debug_step_out(w->dbg))
 STEP_HANDLER(on_frame, a2600debug_frame(w->dbg, 1))
 STEP_HANDLER(on_scanline, a2600debug_scanline(w->dbg, 1))
 STEP_HANDLER(on_rewind, a2600debug_rewind(w->dbg, 1))
@@ -1875,7 +2179,7 @@ static void on_fuji_clear(GtkButton *b, gpointer ud)
 
 /* Help's contexts (data/help/help.md), one per tab */
 static const char *const k_tab_contexts[NTABS] = {
-    "debugger/console", "debugger/disassembly", "debugger/memory", "debugger/breakpoints",
+    "debugger/console", "debugger/disassembly", "debugger/basic", "debugger/memory", "debugger/breakpoints",
     "debugger/watches", "debugger/cart", "debugger/trace", "debugger/history",
     "debugger/video", "debugger/sound", "debugger/symbols", "debugger/fujinet",
 };
@@ -2302,6 +2606,55 @@ static GtkWidget *build_disasm(DbgWin *w)
     return padded(box);
 }
 
+static GtkWidget *build_basic(DbgWin *w)
+{
+    static const struct { const char *label, *tip; int kind; } buttons[] = {
+        { "Import _File\xe2\x80\xa6", "Load a .bas file", PICK_FILE },
+        { "Import F_older\xe2\x80\xa6", "Load every .bas file under a folder", PICK_FOLDER },
+        { "Load _Map\xe2\x80\xa6", "Load a batari Basic listing (.bas.lst) by hand", PICK_MAP },
+    };
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *note = gtk_label_new("");
+    GtkWidget *scroll = mono_view(&w->bas_view, FALSE);
+    GtkGesture *click = gtk_gesture_click_new();
+    GtkTextBuffer *b = gtk_text_view_get_buffer(w->bas_view);
+    size_t i;
+
+    for (i = 0; i < G_N_ELEMENTS(buttons); i++) {
+        GtkWidget *btn = gtk_button_new_with_mnemonic(buttons[i].label);
+        gtk_widget_set_tooltip_text(btn, buttons[i].tip);
+        g_object_set_data(G_OBJECT(btn), "kind", GINT_TO_POINTER(buttons[i].kind));
+        g_signal_connect(btn, "clicked", G_CALLBACK(on_bas_pick), w);
+        gtk_box_append(GTK_BOX(bar), btn);
+    }
+    w->bas_names = gtk_string_list_new(NULL);
+    w->bas_files = GTK_DROP_DOWN(gtk_drop_down_new(G_LIST_MODEL(w->bas_names), NULL));
+    gtk_widget_set_tooltip_text(GTK_WIDGET(w->bas_files), "The source file shown");
+    g_signal_connect(w->bas_files, "notify::selected", G_CALLBACK(on_bas_file_selected), w);
+    gtk_box_append(GTK_BOX(bar), GTK_WIDGET(w->bas_files));
+
+    gtk_widget_add_css_class(note, "dim-label");
+    gtk_label_set_xalign(GTK_LABEL(note), 0);
+    gtk_label_set_wrap(GTK_LABEL(note), TRUE);
+    w->bas_note = GTK_LABEL(note);
+    gtk_label_set_text(w->bas_note, "Import a .bas file, or a folder of them; the listing "
+                                    "(.bas.lst) beside it puts each line at its address.");
+
+    /* later tags win: the dimmed lines and the machine's line, the dot over both */
+    gtk_text_buffer_create_tag(b, "dim", "foreground", "#8a8a8a", NULL);
+    accent_tag(w->bas_view, "pc");
+    gtk_text_buffer_create_tag(b, "bp_on", "foreground", "#e01b24", NULL);
+    gtk_text_buffer_create_tag(b, "bp_off", "foreground", "#8a8a8a", NULL);
+    g_signal_connect(click, "pressed", G_CALLBACK(on_bas_click), w);
+    gtk_widget_add_controller(GTK_WIDGET(w->bas_view), GTK_EVENT_CONTROLLER(click));
+
+    gtk_box_append(GTK_BOX(box), bar);
+    gtk_box_append(GTK_BOX(box), note);
+    gtk_box_append(GTK_BOX(box), scroll);
+    return padded(box);
+}
+
 static GtkWidget *build_breaks(DbgWin *w)
 {
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
@@ -2573,6 +2926,7 @@ static void on_win_finalized(gpointer data, GObject *where)
     if (w->bp_sig) g_string_free(w->bp_sig, TRUE);
     if (w->wt_labels) g_ptr_array_unref(w->wt_labels);
     if (w->sym_sig) g_string_free(w->sym_sig, TRUE);
+    g_free(w->bas_break);
     g_free(w);
 }
 
@@ -2633,6 +2987,10 @@ void a2600_debugger_show(GtkWindow *parent, a2600session *session)
     w = g_new0(DbgWin, 1);
     w->session = session;
     w->dbg = a2600session_debugger(session);
+    w->srcmap = a2600srcmap_shared();
+    w->bas_file = -1;
+    w->bas_gen = ~0u;
+    w->bas_recentre = TRUE;
     g_win = w;
 
     w->win = GTK_WINDOW(adw_window_new());
@@ -2653,6 +3011,7 @@ void a2600_debugger_show(GtkWindow *parent, a2600session *session)
     gtk_widget_set_vexpand(notebook, TRUE);
     w->pages[TAB_CONSOLE] = build_console(w);
     w->pages[TAB_DISASM] = build_disasm(w);
+    w->pages[TAB_BASIC] = build_basic(w);
     w->pages[TAB_MEMORY] = build_memory(w);
     w->pages[TAB_BREAKS] = build_breaks(w);
     w->pages[TAB_WATCHES] = build_watches(w);
@@ -2708,6 +3067,12 @@ void a2600_debugger_show(GtkWindow *parent, a2600session *session)
         if (wb && *wb && a2600sym_parse_range(w->dbg, wb, &lo, &hi)) break_on_change(w, lo, hi);
         if (mg && *mg && a2600sym_parse_range(w->dbg, mg, &lo, &hi)) show_in_memory(w, lo, hi);
         if (g_getenv("A2600_DEBUGGER_HISTORY")) a2600debug_trace_enable(w->dbg, 1);
+    }
+    {   /* A2600_BASIC_IMPORT=<.bas file or folder> imports it as Import File would;
+         * A2600_BASIC_BREAK=<name.bas>:<line> toggles a breakpoint on that line */
+        const char *imp = g_getenv("A2600_BASIC_IMPORT"), *brk = g_getenv("A2600_BASIC_BREAK");
+        if (imp && *imp) basic_after_import(w, imp);
+        if (brk && strchr(brk, ':')) w->bas_break = g_strdup(brk);
     }
     stop_and_refresh(w);
     g_signal_connect(w->win, "map", G_CALLBACK(on_win_map), w);
