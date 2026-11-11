@@ -4,7 +4,7 @@
  * core/include/a2600debug.h and a2600memtools.h. Mirrors the family's other
  * debuggers (the SMS, Atari 7800, Astrocade, Apple II and Intellivision macOS
  * ones, and the GTK, Qt and Win32 windows), tab for tab: Console,
- * Disassembly, Memory, Breakpoints, Watches, Cart & I/O, Trace, History,
+ * Disassembly, BASIC, Memory, Breakpoints, Watches, Cart & I/O, Trace, History,
  * Video, Sound, Symbols, FujiNet. The 6502 registers sit in an editable strip
  * under the tabs; any tab can be popped out into a window of its own (Pop
  * Out / Dock).
@@ -25,9 +25,16 @@
  * field takes them too): F5 stop/run, F7 step, F8 step over, Shift+F8 step
  * out.
  *
+ * The BASIC tab shows the batari Basic source imported through
+ * a2600debug_basic_import (a2600srcmap.h): a click toggles a breakpoint on a
+ * line, the line the machine is on is the accent bar, and while the tab is on
+ * show Step, Step Over and Step Out (and F7, F8, Shift+F8) go by BASIC line.
+ * A2600_BASIC_IMPORT=<.bas file or folder> and A2600_BASIC_BREAK=<name.bas>:<line>
+ * are for captures and tests.
+ *
  * A2600_DEBUGGER_TAB picks the tab shown first: an index (0 Console,
- * 1 Disassembly, 2 Memory, 3 Breakpoints, 4 Watches, 5 Cart & I/O, 6 Trace,
- * 7 History, 8 Video, 9 Sound, 10 Symbols, 11 FujiNet) or the start of a tab's
+ * 1 Disassembly, 2 BASIC, 3 Memory, 4 Breakpoints, 5 Watches, 6 Cart & I/O,
+ * 7 Trace, 8 History, 9 Video, 10 Sound, 11 Symbols, 12 FujiNet) or the start of a tab's
  * name ("cart", "prompt" for the console, "tia" for Video, "io" for
  * Cart & I/O). For captures: A2600_DEBUGGER_WATCH (a comma list),
  * A2600_DEBUGGER_WATCH_BREAK, A2600_DEBUGGER_MEM_GOTO, A2600_DEBUGGER_HISTORY=1
@@ -79,17 +86,18 @@
 #define FUJI_PACKETS_MAX 512   /* FujiNet packets shown */
 #define TAB_CONSOLE 0          /* the tabs, in order */
 #define TAB_DISASM 1
-#define TAB_MEMORY 2
-#define TAB_BREAKS 3
-#define TAB_WATCHES 4
-#define TAB_CART 5
-#define TAB_TRACE 6
-#define TAB_HIST 7
-#define TAB_VIDEO 8
-#define TAB_SOUND 9
-#define TAB_SYMBOLS 10
-#define TAB_FUJINET 11
-#define NUM_TABS 12
+#define TAB_BASIC 2
+#define TAB_MEMORY 3
+#define TAB_BREAKS 4
+#define TAB_WATCHES 5
+#define TAB_CART 6
+#define TAB_TRACE 7
+#define TAB_HIST 8
+#define TAB_VIDEO 9
+#define TAB_SOUND 10
+#define TAB_SYMBOLS 11
+#define TAB_FUJINET 12
+#define NUM_TABS 13
 #define HIST_RING 65536        /* the engine's trace ring */
 #define HIST_SHOWN 2000        /* the newest matching lines a tab shows */
 #define TRACE_TICKS 4          /* 4 x 100 ms: the Trace tab's live refresh */
@@ -191,6 +199,26 @@ static NSColor *breakpointRed(void)
 }
 @end
 
+/* The BASIC tab's text view: a click reports the clicked source line (the view
+ * shows one file, a text line per source line, so it is the line's position). */
+@interface BasTextView : NSTextView
+@property (nonatomic, copy) void (^onToggleLine)(int line);
+@end
+
+@implementation BasTextView
+- (void)mouseDown:(NSEvent *)event
+{
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    NSUInteger index = [self characterIndexForInsertionAtPoint:point];
+    NSString *text = self.string;
+    if (index > text.length) index = text.length;
+    int line = 1;
+    for (NSUInteger i = 0; i < index; i++)
+        if ([text characterAtIndex:i] == '\n') line++;
+    if (self.onToggleLine) self.onToggleLine(line);
+}
+@end
+
 @interface A2600DebuggerWindow () <NSTabViewDelegate>
 - (instancetype)initWithSession:(a2600session *)session;
 - (void)show;
@@ -252,6 +280,16 @@ static NSColor *breakpointRed(void)
     NSTabViewItem *_items[NUM_TABS];    /* each tab's item, in order */
     NSWindow *_popped[NUM_TABS];        /* its own window while popped out */
 
+    /* BASIC tab: the imported batari Basic source (a2600srcmap_shared) */
+    NSTextField *_basNote;
+    NSPopUpButton *_basFiles;
+    BasTextView *_basView;
+    int _basFile;               /* index into the map; -1 = nothing shown */
+    unsigned _basGen;           /* a2600srcmap_generation() the view was built from */
+    unsigned _basDbgGen;        /* a2600debug_generation() it was drawn at */
+    uint64_t _basSerial;        /* the stop the view last followed */
+    BOOL _basDirty;             /* redraw at the next refresh */
+
     NSPopUpButton *_bank;           /* the Disassembly's bank chooser: "PC's bank", Bank 0 ... */
     NSButton *_followPc;
     NSTextField *_jump;
@@ -283,16 +321,16 @@ static NSString *const kFileTitles[NUM_FILE_KINDS] = {
 
 /* A2600_DEBUGGER_TAB takes an index or the start of one of these. */
 static const char *const kTabNames[NUM_TABS] = {
-    "console", "disassembly", "memory", "breakpoints", "watches", "cart", "trace", "history", "video", "sound",
+    "console", "disassembly", "basic", "memory", "breakpoints", "watches", "cart", "trace", "history", "video", "sound",
     "symbols", "fujinet"
 };
 static NSString *const kTabTitles[NUM_TABS] = {
-    @"Console", @"Disassembly", @"Memory", @"Breakpoints", @"Watches", @"Cart & I/O", @"Trace", @"History",
+    @"Console", @"Disassembly", @"BASIC", @"Memory", @"Breakpoints", @"Watches", @"Cart & I/O", @"Trace", @"History",
     @"Video", @"Sound", @"Symbols", @"FujiNet"
 };
 /* Help's contexts (a2600help.h), one per tab */
 static NSString *const kHelpTabs[NUM_TABS] = {
-    @"console", @"disassembly", @"memory", @"breakpoints", @"watches", @"cart", @"trace", @"history", @"video",
+    @"console", @"disassembly", @"basic", @"memory", @"breakpoints", @"watches", @"cart", @"trace", @"history", @"video",
     @"sound", @"symbols", @"fujinet"
 };
 
@@ -571,12 +609,31 @@ static void fill(NSStackView *stack, NSView *view)
     _fujiCount = -1;
     _memBase = 0x80 - 2 * 16;       /* the RIOT RAM, a couple of rows down */
     _disasmBank = -1;
+    _basFile = -1;
+    _basGen = (unsigned)-1;     /* the first refresh builds the view */
+    _basDirty = YES;
     _symAddrs = [NSMutableArray array];
     _history = [NSMutableArray array];
     [self buildWindow];
+    [self basicAuto];
 
     /* For captures and tests, like A2600_DEBUGGER_TAB */
     {
+        const char *basImport = getenv("A2600_BASIC_IMPORT");
+        const char *basBreak = getenv("A2600_BASIC_BREAK");
+        if (basImport && *basImport) [self basicImported:[NSString stringWithUTF8String:basImport] folder:NO];
+        if (basBreak && strchr(basBreak, ':')) {
+            NSString *spec = [NSString stringWithUTF8String:basBreak];
+            NSString *name = [spec substringToIndex:[spec rangeOfString:@":" options:NSBackwardsSearch].location];
+            const int line = [[spec substringFromIndex:[spec rangeOfString:@":" options:NSBackwardsSearch].location + 1] intValue];
+            a2600srcmap *map = a2600srcmap_shared();
+            for (int f = 0; f < a2600srcmap_file_count(map); f++)
+                if ([@(a2600srcmap_file_name(map, f)) hasSuffix:name]) {
+                    a2600debug_line_break_toggle(_dbg, f, line);
+                    break;
+                }
+        }
+
         const char *watch = getenv("A2600_DEBUGGER_WATCH");
         const char *watchBreak = getenv("A2600_DEBUGGER_WATCH_BREAK");
         const char *gotoText = getenv("A2600_DEBUGGER_MEM_GOTO");
@@ -698,6 +755,7 @@ static void fill(NSStackView *stack, NSView *view)
 - (void)onTick
 {
     if (![_window isVisible]) return;
+    if ([self basicAuto]) [self refreshTab];
     const unsigned gen = a2600debug_generation(_dbg);
     const BOOL stopped = a2600debug_is_stopped(_dbg) != 0;
     const uint64_t stopSerial = a2600debug_stop_serial(_dbg);
@@ -888,6 +946,272 @@ static void fill(NSStackView *stack, NSView *view)
     fill(v, row);
     fill(v, scroll);
     return v;
+}
+
+/* ---- the BASIC tab ---------------------------------------------------------- */
+
+- (NSView *)buildBasic
+{
+    NSButton *fileBtn = [self button:@"Import File…" action:@selector(basImportFile:)];
+    fileBtn.toolTip = @"Load a .bas file and everything it includes, with its listing";
+    NSButton *folderBtn = [self button:@"Import Folder…" action:@selector(basImportFolder:)];
+    folderBtn.toolTip = @"Load every .bas file under a folder";
+    NSButton *mapBtn = [self button:@"Load Map…" action:@selector(basLoadMap:)];
+    mapBtn.toolTip = @"Load a batari Basic listing (.lst) for the sources already imported";
+    _basFiles = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    _basFiles.target = self;
+    _basFiles.action = @selector(basFileChosen:);
+    _basFiles.toolTip = @"The source file shown";
+    [_basFiles setRefusesFirstResponder:YES];
+    NSStackView *bar = hstack(@[fileBtn, folderBtn, mapBtn, _basFiles]);
+
+    _basNote = [self hint:@""];
+
+    NSScrollView *scroll = [[NSScrollView alloc] init];
+    scroll.hasVerticalScroller = YES;
+    scroll.hasHorizontalScroller = YES;
+    _basView = [[BasTextView alloc] initWithFrame:NSMakeRect(0, 0, 900, 600)];
+    _basView.editable = NO;
+    _basView.richText = YES;
+    _basView.font = monoFont();
+    _basView.minSize = NSMakeSize(0, 0);
+    _basView.maxSize = NSMakeSize(FLT_MAX, FLT_MAX);
+    _basView.verticallyResizable = YES;
+    _basView.horizontallyResizable = YES;
+    _basView.textContainer.widthTracksTextView = NO;
+    _basView.textContainer.containerSize = NSMakeSize(FLT_MAX, FLT_MAX);
+    _basView.autoresizingMask = NSViewWidthSizable;
+    __weak A2600DebuggerWindow *weakSelf = self;
+    _basView.onToggleLine = ^(int line) {
+        A2600DebuggerWindow *strongSelf = weakSelf;
+        if (!strongSelf || strongSelf->_basFile < 0) return;
+        a2600srcmap *map = a2600srcmap_shared();
+        if (line < 1 || line > a2600srcmap_line_count(map, strongSelf->_basFile) ||
+            !a2600srcmap_line_has_code(map, strongSelf->_basFile, line)) return;     /* nothing runs there */
+        a2600debug_line_break_toggle(strongSelf->_dbg, strongSelf->_basFile, line);
+        strongSelf->_basDirty = YES;
+        [strongSelf refreshBasic];
+        if ([strongSelf tabVisible:TAB_DISASM]) [strongSelf refreshDisasm];
+        if ([strongSelf tabVisible:TAB_BREAKS]) [strongSelf refreshBps];
+    };
+    scroll.documentView = _basView;
+
+    NSStackView *v = vstack(@[bar, _basNote, scroll]);
+    fill(v, bar);
+    fill(v, _basNote);
+    fill(v, scroll);
+    return v;
+}
+
+/* On the BASIC tab the three steppers go by BASIC line. */
+- (BOOL)basicShowing
+{
+    return [self currentTab] == TAB_BASIC || _popped[TAB_BASIC].isKeyWindow;
+}
+
+/* The one-line note under the buttons, from an import's result. */
+- (void)basicNote:(const a2600srcmap_import_result *)result
+{
+    if (result->map_path[0]) {
+        NSMutableString *note = [NSMutableString stringWithFormat:@"%d file%s, %d line%s with code from %@",
+                                 result->files, result->files == 1 ? "" : "s", result->mapped,
+                                 result->mapped == 1 ? "" : "s", [@(result->map_path) lastPathComponent]];
+        if (result->old_format) [note appendString:@" (old compiler: matched by text)"];
+        if (result->sym_path[0]) [note appendFormat:@", symbols from %@", [@(result->sym_path) lastPathComponent]];
+        _basNote.stringValue = note;
+    } else {
+        _basNote.stringValue = [NSString stringWithFormat:
+            @"no listing found: %d file%s loaded, nothing mapped. Compile with 2600basic.sh, then Load Map.",
+            result->files, result->files == 1 ? "" : "s"];
+    }
+}
+
+/* If the cartridge has its source beside it, imports it (once per cartridge;
+ * cheap to call). 1 when it imported just now. */
+- (BOOL)basicAuto
+{
+    a2600srcmap_import_result result;
+    memset(&result, 0, sizeof result);
+    if (a2600debug_basic_auto_import(_dbg, &result) != 1) return NO;
+    [self basicNote:&result];
+    _basFile = -1;      /* the map changed: basicReload picks the file */
+    _basDirty = YES;
+    return YES;
+}
+
+/* The map changed (an import, a Load Map): the file list. */
+- (void)basicReload
+{
+    a2600srcmap *map = a2600srcmap_shared();
+    const int count = a2600srcmap_file_count(map);
+    [_basFiles removeAllItems];
+    for (int i = 0; i < count; i++)     /* the menu, as a title may repeat in two folders */
+        [_basFiles.menu addItemWithTitle:@(a2600srcmap_file_name(map, i)) action:NULL keyEquivalent:@""];
+    if (_basFile >= count) _basFile = -1;
+    if (_basFile < 0 && count > 0) {
+        BOOL found = NO;
+        _basFile = 0;       /* the first file with any code on it */
+        for (int f = 0; f < count && !found; f++) {
+            const int lines = a2600srcmap_line_count(map, f);
+            for (int l = 1; l <= lines && !found; l++)
+                if (a2600srcmap_line_has_code(map, f, l)) {
+                    _basFile = f;
+                    found = YES;
+                }
+        }
+    }
+    if (_basFile >= 0) [_basFiles selectItemAtIndex:_basFile];
+    if (count == 0)
+        _basNote.stringValue = @"Import a .bas file, or a folder of them. The listing 2600basic.sh leaves "
+                               @"(.lst) puts each line at its address.";
+}
+
+/* Redraws the source when the map, the machine or the stop changed. A new stop
+ * follows the machine's line into its file and centres it, even if the reader
+ * scrolled away. */
+- (void)refreshBasic
+{
+    a2600srcmap *map = a2600srcmap_shared();
+    const unsigned mapGen = a2600srcmap_generation(map);
+    const unsigned dbgGen = a2600debug_generation(_dbg);
+    const uint64_t serial = a2600debug_stop_serial(_dbg);
+    const BOOL stopped = a2600debug_is_stopped(_dbg) != 0;
+    const BOOL newStop = stopped && serial != _basSerial;
+    if (mapGen == _basGen && dbgGen == _basDbgGen && !newStop && !_basDirty) return;
+    BOOL reloaded = NO;
+    if (mapGen != _basGen) {
+        _basGen = mapGen;
+        [self basicReload];
+        reloaded = YES;
+    }
+    _basDbgGen = dbgGen;
+    _basDirty = NO;
+    if (stopped) _basSerial = serial;
+
+    int pcFile = -1, pcLine = 0;
+    if (stopped && !a2600debug_line_at_pc(_dbg, &pcFile, &pcLine)) {
+        pcFile = -1;
+        pcLine = 0;
+    }
+    if (pcFile >= 0 && pcFile != _basFile && (newStop || reloaded) && pcFile < a2600srcmap_file_count(map)) {
+        _basFile = pcFile;          /* followed into another file */
+        [_basFiles selectItemAtIndex:pcFile];
+    }
+
+    NSMutableAttributedString *text = [[NSMutableAttributedString alloc] init];
+    NSRange pcRange = NSMakeRange(NSNotFound, 0);
+    if (_basFile >= 0) {
+        const int count = a2600srcmap_line_count(map, _basFile);
+        for (int i = 1; i <= count; i++) {
+            const BOOL code = a2600srcmap_line_has_code(map, _basFile, i) != 0;
+            const int bp = code ? a2600debug_line_break_state(_dbg, _basFile, i) : 0;
+            /* "● 12  src": a red dot for a breakpoint, a grey ring for a disabled one */
+            NSString *gutter = bp == 1 ? @"●" : (bp == 2 ? @"○" : @" ");
+            NSString *line = [NSString stringWithFormat:@"%@ %5d  %@", gutter, i,
+                              cstr(a2600srcmap_line_text(map, _basFile, i))];
+            NSMutableAttributedString *styled = [[NSMutableAttributedString alloc] initWithString:line
+                                                                                         attributes:monoAttrs()];
+            if (!code)
+                [styled addAttribute:NSForegroundColorAttributeName value:NSColor.disabledControlTextColor
+                               range:NSMakeRange(0, styled.length)];
+            if (bp)
+                [styled addAttribute:NSForegroundColorAttributeName
+                               value:bp == 1 ? breakpointRed() : NSColor.systemGrayColor
+                               range:NSMakeRange(0, 1)];
+            /* the machine's line: the accent bar, last so its colours win */
+            if (pcFile == _basFile && i == pcLine) {
+                [styled addAttributes:accentAttrs() range:NSMakeRange(0, styled.length)];
+                pcRange = NSMakeRange(text.length, styled.length);
+            }
+            [text appendAttributedString:styled];
+            [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n" attributes:monoAttrs()]];
+        }
+    }
+    setStyledText(_basView, text);
+
+    if ((newStop || reloaded) && pcRange.location != NSNotFound) {
+        /* centre the line */
+        NSScrollView *scroll = _basView.enclosingScrollView;
+        NSLayoutManager *layout = _basView.layoutManager;
+        const NSRange glyphs = [layout glyphRangeForCharacterRange:pcRange actualCharacterRange:NULL];
+        const NSRect box = [layout boundingRectForGlyphRange:glyphs inTextContainer:_basView.textContainer];
+        NSClipView *clip = scroll.contentView;
+        NSRect bounds = clip.bounds;
+        bounds.origin.y = box.origin.y + _basView.textContainerOrigin.y + box.size.height / 2 - bounds.size.height / 2;
+        bounds = [clip constrainBoundsRect:bounds];
+        [clip scrollToPoint:bounds.origin];
+        [scroll reflectScrolledClipView:clip];
+    }
+}
+
+/* An import by path (Import File / Folder, A2600_BASIC_IMPORT): the sources,
+ * their listing, and the .sym beside it. */
+- (void)basicImported:(NSString *)path folder:(BOOL)folder
+{
+    a2600srcmap_import_result result;
+    memset(&result, 0, sizeof result);
+    if (a2600debug_basic_import(_dbg, path.fileSystemRepresentation, &result) < 0) {
+        _basNote.stringValue = folder ? @"Could not read that folder." : @"Could not read that file.";
+        return;
+    }
+    [self basicNote:&result];
+    _basFile = -1;      /* basicReload picks the first file with code */
+    _basDirty = YES;
+    [self refreshNow];
+}
+
+/* kind: 0 file, 1 folder, 2 map */
+- (void)basicPick:(int)kind
+{
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.allowsMultipleSelection = NO;
+    panel.canChooseFiles = kind != 1;
+    panel.canChooseDirectories = kind == 1;
+    if (kind == 0) panel.allowedFileTypes = @[ @"bas" ];
+    else if (kind == 2) panel.allowedFileTypes = @[ @"lst" ];
+    const char *lastDir = a2600session_get_str(_session, "bas_dir", "");
+    if (lastDir && lastDir[0]) panel.directoryURL = [NSURL fileURLWithPath:@(lastDir) isDirectory:YES];
+    __weak A2600DebuggerWindow *weakSelf = self;
+    [panel beginWithCompletionHandler:^(NSModalResponse response) {
+        A2600DebuggerWindow *strongSelf = weakSelf;
+        NSURL *url = panel.URLs.firstObject;
+        if (!strongSelf || response != NSModalResponseOK || !url) return;
+        NSString *path = url.path;
+        /* the next panel opens where this one ended */
+        NSString *dir = kind == 1 ? path : [path stringByDeletingLastPathComponent];
+        a2600session_set_str(strongSelf->_session, "bas_dir", dir.fileSystemRepresentation);
+        a2600session_settings_flush(strongSelf->_session);
+        if (kind == 2) {
+            a2600srcmap *map = a2600srcmap_shared();
+            const int mapped = a2600srcmap_load_map(map, path.fileSystemRepresentation);
+            if (mapped < 0) {
+                strongSelf->_basNote.stringValue = @"Could not read that listing.";
+                return;
+            }
+            a2600srcmap_import_result result;
+            memset(&result, 0, sizeof result);
+            result.files = a2600srcmap_file_count(map);
+            result.mapped = mapped;
+            snprintf(result.map_path, sizeof result.map_path, "%s", path.fileSystemRepresentation);
+            [strongSelf basicNote:&result];
+            strongSelf->_basDirty = YES;
+            [strongSelf refreshNow];
+        } else {
+            [strongSelf basicImported:path folder:kind == 1];
+        }
+    }];
+}
+
+- (void)basImportFile:(id)sender { (void)sender; [self basicPick:0]; }
+- (void)basImportFolder:(id)sender { (void)sender; [self basicPick:1]; }
+- (void)basLoadMap:(id)sender { (void)sender; [self basicPick:2]; }
+
+- (void)basFileChosen:(id)sender
+{
+    (void)sender;
+    _basFile = (int)_basFiles.indexOfSelectedItem;
+    _basDirty = YES;
+    [self refreshBasic];
 }
 
 /* The Video tab: a controller (core a2600vidtab.h) behind its own views. */
@@ -1190,7 +1514,7 @@ static NSTextField *tableCell(NSString *text, CGFloat width, BOOL bold)
                                       forOrientation:NSLayoutConstraintOrientationHorizontal];
 
     _tabs = [[NSTabView alloc] init];
-    NSArray *pages = @[ [self buildConsole], [self buildDisasm], [self buildMemory], [self buildBreaks],
+    NSArray *pages = @[ [self buildConsole], [self buildDisasm], [self buildBasic], [self buildMemory], [self buildBreaks],
                         [self buildWatches], [self buildCart], [self buildHist:0], [self buildHist:1],
                         [self buildVideo], [self buildSound], [self buildSymbols], [self buildFujinet] ];
     for (int i = 0; i < NUM_TABS; i++) {
@@ -1252,9 +1576,27 @@ static NSTextField *tableCell(NSString *text, CGFloat width, BOOL bold)
     [self refreshNow];
 }
 
-- (void)step:(id)sender { (void)sender; const unsigned gen = a2600debug_generation(_dbg); a2600debug_step(_dbg); [self moved:gen]; }
-- (void)stepOver:(id)sender { (void)sender; const unsigned gen = a2600debug_generation(_dbg); a2600debug_step_over(_dbg); [self moved:gen]; }
-- (void)stepOut:(id)sender { (void)sender; const unsigned gen = a2600debug_generation(_dbg); a2600debug_step_out(_dbg); [self moved:gen]; }
+- (void)step:(id)sender
+{
+    (void)sender;
+    const unsigned gen = a2600debug_generation(_dbg);
+    if ([self basicShowing]) a2600debug_step_line(_dbg); else a2600debug_step(_dbg);
+    [self moved:gen];
+}
+- (void)stepOver:(id)sender
+{
+    (void)sender;
+    const unsigned gen = a2600debug_generation(_dbg);
+    if ([self basicShowing]) a2600debug_step_line_over(_dbg); else a2600debug_step_over(_dbg);
+    [self moved:gen];
+}
+- (void)stepOut:(id)sender
+{
+    (void)sender;
+    const unsigned gen = a2600debug_generation(_dbg);
+    if ([self basicShowing]) a2600debug_step_line_out(_dbg); else a2600debug_step_out(_dbg);
+    [self moved:gen];
+}
 - (void)scanline:(id)sender { (void)sender; const unsigned gen = a2600debug_generation(_dbg); a2600debug_scanline(_dbg, 1); [self moved:gen]; }
 - (void)frame:(id)sender { (void)sender; const unsigned gen = a2600debug_generation(_dbg); a2600debug_frame(_dbg, 1); [self moved:gen]; }
 - (void)rewind:(id)sender { (void)sender; const unsigned gen = a2600debug_generation(_dbg); a2600debug_rewind(_dbg, 1); [self moved:gen]; }
@@ -1918,6 +2260,7 @@ static NSTextField *tableCell(NSString *text, CGFloat width, BOOL bold)
 {
     switch (tab) {
     case TAB_DISASM: [self refreshDisasm]; break;
+    case TAB_BASIC: [self refreshBasic]; break;
     case TAB_MEMORY: [self refreshMem]; break;
     case TAB_BREAKS: [self refreshBps]; break;
     case TAB_WATCHES: [self refreshWatches]; break;
