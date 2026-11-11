@@ -27,7 +27,7 @@ static const char *const platform_names[] = { "GNOME", "KDE", "Windows", "macOS"
 /* What the frontends' Help buttons and menus open. */
 static const char *const contexts[] = {
     "main", "import-sd", "keypad", "fujilog", "prefs/Machine",
-    "debugger/console", "debugger/disassembly", "debugger/memory", "debugger/breakpoints",
+    "debugger/console", "debugger/disassembly", "debugger/basic", "debugger/memory", "debugger/breakpoints",
     "debugger/watches", "debugger/cart", "debugger/trace", "debugger/history",
     "debugger/video", "debugger/sound", "debugger/symbols", "debugger/fujinet",
 };
@@ -232,8 +232,10 @@ check_debugger(int p)
             misses++;
         }
     }
-    /* the twelve tabs */
-    require(p, "debugger", "tabs", "twelve tabs");
+    /* the thirteen tabs */
+    require(p, "debugger", "tabs", "thirteen tabs");
+    require(p, "debugger/basic", "steps", "Step Over");
+    require(p, "debugger/basic", "map", "Load Map");
     require(p, "debugger/video", "views", "Display");
     require(p, "debugger/video", "views", "Decoded");
     require(p, "debugger/video", "views", "Beam");

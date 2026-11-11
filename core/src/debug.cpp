@@ -34,6 +34,7 @@
 #include "TIA.hxx"
 #include "TIADebug.hxx"
 #include "TIASurface.hxx"
+#include "Expression.hxx"
 #include "TrapArray.hxx"
 #include "YaccParser.hxx"
 
@@ -44,6 +45,7 @@ extern "C" {
 #include "session_internal.h"
 #include "a2600debug.h"
 #include "a2600memtools.h"
+#include "a2600srcmap.h"
 #include "a2600vidtab.h"
 #include "fuji_trace.h"
 }
@@ -68,6 +70,8 @@ struct Bp
 };
 
 constexpr size_t kRing = 65536;
+// The name of the hidden conditional break a BASIC line step runs on.
+constexpr const char* kLineCond = "bbline";
 
 } // namespace
 
@@ -95,6 +99,14 @@ struct a2600debug
 
   const void* lastCpu{nullptr};   // the console the hooks are installed on
   int tempBreak{-1};              // run-to's breakpoint, removed at the next stop
+
+  // BASIC line step (a2600debug_step_line): while lineCond is set, Stella
+  // holds a conditional break named kLineCond that is true at the next line
+  // start of the right stack depth. Removed at the next stop, whatever the cause.
+  bool lineCond{false};
+  int lineMode{0};                // 1 into, 2 over, 3 out
+  int lineSp{0};
+  uInt64 lineCycles{0};           // the instruction we are leaving
 };
 
 namespace {
@@ -279,6 +291,7 @@ void reconcile(a2600debug* d, OSystem& os)
   }
   for(const auto& name : dbg.m6502().getCondBreakNames())
   {
+    if(name == kLineCond) continue;
     const bool known = std::any_of(d->bps.begin(), d->bps.end(), [&](const Bp& bpt) {
       return bpt.type == A2600DEBUG_BP_EXEC && !plain_exec(bpt) && exec_expr(bpt) == name; });
     if(known) continue;
@@ -355,6 +368,7 @@ void sync_console(a2600debug* d, OSystem& os)
   if(cpu == d->lastCpu) return;
   d->lastCpu = cpu;
   d->tempBreak = -1;
+  d->lineCond = false;
   if(d->traceOn.load()) set_trace_tap(d, os, true);
   const std::lock_guard<std::mutex> lock(d->bpMutex);
   for(Bp& bpt : d->bps)
@@ -466,6 +480,35 @@ void a2600debug_trace_install(a2600session* s)
 
 namespace {
 
+// "BASIC line main.bas:7" for the pc a line step stopped at.
+std::string line_reason(OSystem& os, int pc)
+{
+  int file = 0, line = 0;
+  const int bank = os.console().cartridge().getBank(static_cast<uInt16>(pc));
+  char buf[96];
+  if(a2600srcmap_lookup(a2600srcmap_shared(), bank, static_cast<unsigned>(pc), &file, &line))
+  {
+    std::string name = a2600srcmap_file_name(a2600srcmap_shared(), file);
+    const size_t slash = name.find_last_of("/\\");
+    if(slash != std::string::npos) name = name.substr(slash + 1);
+    snprintf(buf, sizeof buf, " at $%04X", pc & 0xffff);
+    return "BASIC line " + name + ":" + std::to_string(line) + buf;
+  }
+  snprintf(buf, sizeof buf, "stopped at $%04X", pc & 0xffff);
+  return buf;
+}
+
+// Take the line step's conditional break out of the console. Stella thread.
+void clear_line_cond(a2600debug* d, OSystem& os)
+{
+  d->lineCond = false;
+  d->lineMode = 0;
+  M6502& cpu = os.debugger().m6502();
+  const auto& names = cpu.getCondBreakNames();
+  for(size_t i = 0; i < names.size(); ++i)
+    if(names[i] == kLineCond) { cpu.delCondBreak(static_cast<uInt32>(i)); break; }
+}
+
 void set_reason(a2600debug* d, const std::string& text, int addr)
 {
   {
@@ -546,7 +589,10 @@ void a2600debug_note_stop(a2600session* s, const char* msg, int addr)
     {
       // a breakpoint's stop carries no address: it lands on the instruction
       if(addr < 0) addr = os->debugger().cpuDebug().pc();
-      count_hits(d, *os, text, addr);
+      if(d->lineCond && text.rfind("CBP[", 0) == 0 && text.find(kLineCond) != std::string::npos)
+        text = line_reason(*os, addr);
+      else
+        count_hits(d, *os, text, addr);
       if(text.rfind("WTrap", 0) == 0 && cpu.lastWriteAddress() == addr)
       {
         char buf[64];
@@ -555,6 +601,8 @@ void a2600debug_note_stop(a2600session* s, const char* msg, int addr)
         text += buf;
       }
     }
+    // after count_hits: it indexes the console's conditional breaks
+    if(d->lineCond) clear_line_cond(d, *os);
   }
   set_reason(d, text, addr);
 }
@@ -844,6 +892,153 @@ extern "C" void a2600debug_step_out(a2600debug* d)
     return ((high << 8 | low) + 1) & 0xffff;
   });
   if(target >= 0) a2600debug_run_to(d, static_cast<uint16_t>(target));
+}
+
+// ---- BASIC lines ---------------------------------------------------------------
+
+namespace {
+
+// True (a stop) at the first instruction of a BASIC line, once the stack is
+// where the step wants it. 6502 stacks grow down, so deeper = a smaller SP.
+// Evaluated by Stella before every instruction while the step is running.
+class LineStepExpr final : public Expression
+{
+  public:
+    LineStepExpr(a2600debug* d, OSystem* os) : myD{d}, myOs{os} { }
+    Int32 evaluate() const override
+    {
+      System& sys = myOs->console().system();
+      if(sys.cycles() == myD->lineCycles) return 0;   // still on the instruction we left
+      const uInt16 pc = static_cast<uInt16>(myOs->debugger().cpuDebug().pc());
+      const int bank = sys.cart().getBank(pc);
+      if(!a2600srcmap_is_line_start(a2600srcmap_shared(), bank, pc)) return 0;
+      const int sp = myOs->debugger().cpuDebug().sp();
+      switch(myD->lineMode)
+      {
+        case 2: return sp >= myD->lineSp;   // over: not inside a call
+        case 3: return sp > myD->lineSp;    // out: the routine has returned
+        default: return 1;
+      }
+    }
+  private:
+    a2600debug* myD;
+    OSystem* myOs;
+};
+
+void line_step(a2600debug* d, int mode)
+{
+  if(!d || !d->session->running) return;
+  with_dbg(d, [&](OSystem& os) {
+    if(!os.hasConsole()) return 0;
+    Debugger& dbg = os.debugger();
+    if(os.eventHandler().state() != EventHandlerState::DEBUGGER)
+      os.eventHandler().enterDebugMode();
+    if(d->lineCond) clear_line_cond(d, os);
+    d->lineMode = mode;
+    d->lineSp = dbg.cpuDebug().sp();
+    d->lineCycles = os.console().system().cycles();
+    dbg.m6502().addCondBreak(std::make_unique<LineStepExpr>(d, &os), kLineCond);
+    d->lineCond = true;
+    dbg.run("run");
+    return 0;
+  });
+  ++d->generation;
+}
+
+// The run-time address a window passes to the breakpoint calls for a line.
+bool line_addr(int file, int line, uint16_t* addr, int* bank)
+{
+  int b = 0;
+  const int a = a2600srcmap_first_addr(a2600srcmap_shared(), file, line, &b);
+  if(a < 0) return false;
+  *addr = static_cast<uint16_t>(0xf000 | (a & 0xfff));
+  *bank = b;
+  return true;
+}
+
+} // namespace
+
+// Step: run to the next BASIC line (into calls), Over: not into a call, Out:
+// until the routine returns. Like run_to they return at once; the stop (reason
+// "BASIC line main.bas:7 at $F461") arrives from the Stella thread.
+extern "C" void a2600debug_step_line(a2600debug* d) { line_step(d, 1); }
+extern "C" void a2600debug_step_line_over(a2600debug* d) { line_step(d, 2); }
+extern "C" void a2600debug_step_line_out(a2600debug* d) { line_step(d, 3); }
+
+extern "C" int a2600debug_line_at_pc(a2600debug* d, int* file, int* line)
+{
+  if(!d || !d->session->running) return 0;
+  return with_dbg(d, [&](OSystem& os) {
+    if(!os.hasConsole()) return 0;
+    const uInt16 pc = static_cast<uInt16>(os.debugger().cpuDebug().pc());
+    int f = 0, l = 0;
+    if(!a2600srcmap_lookup(a2600srcmap_shared(), os.console().cartridge().getBank(pc), pc, &f, &l)) return 0;
+    if(file) *file = f;
+    if(line) *line = l;
+    return 1;
+  });
+}
+
+extern "C" int a2600debug_line_break_toggle(a2600debug* d, int file, int line)
+{
+  uint16_t addr = 0;
+  int bank = 0;
+  if(!d || !line_addr(file, line, &addr, &bank)) return -1;
+  return a2600debug_breakpoint_toggle(d, addr, bank);
+}
+
+// 0 none, 1 an enabled execute breakpoint, 2 a disabled one. Reads the table only.
+extern "C" int a2600debug_line_break_state(a2600debug* d, int file, int line)
+{
+  uint16_t addr = 0;
+  int bank = 0;
+  if(!d || !line_addr(file, line, &addr, &bank)) return 0;
+  const std::lock_guard<std::mutex> lock(d->bpMutex);
+  int state = 0;
+  for(const Bp& bpt : d->bps)
+    if(plain_exec(bpt) && same_addr(bpt.start, addr) && (bpt.bank == bank || bpt.bank == A2600DEBUG_ANY_BANK))
+    {
+      if(bpt.enabled) return 1;
+      state = 2;
+    }
+  return state;
+}
+
+// Labels from a dasm symbol file (batari Basic's X.bas.sym), by Stella's own
+// rules (CartDebug::loadSymbolFile): "name hex" per line, a leading "N." kept
+// as ".name", names ending in '$' and lines starting '-' skipped. Replaces the
+// user labels. Returns the labels added, or -1.
+extern "C" int a2600debug_load_symbols_path(a2600debug* d, const char* path, char* msg, int msgsz)
+{
+  if(!d || !path || !d->session->running) return -1;
+  FILE* f = fopen(path, "r");
+  if(!f) { put(msg, msgsz, std::string("symbol file '") + path + "' not readable"); return -1; }
+  std::vector<std::pair<std::string, int>> rows;
+  char line[512];
+  while(fgets(line, sizeof line, f))
+  {
+    char name[256];
+    unsigned value = 0;
+    if(sscanf(line, "%255s %x", name, &value) != 2 || name[0] == '-') continue;
+    std::string label(name);
+    const size_t dot = label.find('.');
+    if(dot != std::string::npos) label = label.substr(dot);
+    else if(label.back() == '$') continue;
+    rows.emplace_back(label, static_cast<int>(value));
+  }
+  fclose(f);
+  const int n = with_dbg(d, [&](OSystem& os) {
+    if(!os.hasConsole()) return -1;
+    CartDebug& cart = os.debugger().cartDebug();
+    cart.clearLabels();
+    int added = 0;
+    for(const auto& row : rows)
+      if(cart.addLabel(row.first, static_cast<uInt16>(row.second))) ++added;
+    return added;
+  });
+  ++d->generation;
+  put(msg, msgsz, n < 0 ? "no console" : std::to_string(n) + " labels from " + path);
+  return n;
 }
 
 // ---- CPU -----------------------------------------------------------------------

@@ -65,6 +65,24 @@ void a2600debug_step_out(a2600debug *d);
 /* Run until PC == addr ("runToPc"). */
 void a2600debug_run_to(a2600debug *d, uint16_t addr);
 
+/* ---- batari Basic source lines (a2600srcmap.h holds the map) -------------------
+ * Step / Over / Out by BASIC line: run until the first instruction of a mapped
+ * line (Over: not inside a call; Out: after the routine returned). They return
+ * at once, like run_to; the stop reason reads "BASIC line main.bas:7 at $F461".
+ * A user breakpoint, a pause or any other stop ends the step. */
+void a2600debug_step_line(a2600debug *d);
+void a2600debug_step_line_over(a2600debug *d);
+void a2600debug_step_line_out(a2600debug *d);
+/* The BASIC line the pc is in: 1 and file/line (a2600srcmap indices), else 0. */
+int  a2600debug_line_at_pc(a2600debug *d, int *file, int *line);
+/* Toggle the execute breakpoint at a line's first instruction (1 set, 0
+ * cleared, -1 the line has no code); its state: 0 none, 1 enabled, 2 disabled. */
+int  a2600debug_line_break_toggle(a2600debug *d, int file, int line);
+int  a2600debug_line_break_state(a2600debug *d, int file, int line);
+/* Load a dasm symbol file (X.bas.sym) from any path, replacing the user
+ * labels. Returns the labels added, or -1 (msg says why). */
+int  a2600debug_load_symbols_path(a2600debug *d, const char *path, char *msg, int msgsz);
+
 /* ---- CPU --------------------------------------------------------------------- */
 typedef struct {
     int pc, sp, a, x, y, ps;

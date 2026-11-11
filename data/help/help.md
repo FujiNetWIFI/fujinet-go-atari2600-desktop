@@ -384,7 +384,7 @@ and `bindings` (the controls that differ from the defaults).
 # Debugger
 
 The Debugger (<kbd>F12</kbd>) stops the console and shows what it is doing.
-It has twelve tabs; closing it lets the console go on as it was. The 6507's
+It has thirteen tabs; closing it lets the console go on as it was. The 6507's
 registers and flags sit in a strip under the tabs: edit a value while stopped
 and press <kbd>Enter</kbd>. The engine is Stella's own debugger.
 
@@ -399,7 +399,7 @@ and press <kbd>Enter</kbd>. The engine is Stella's own debugger.
 | Rewind and Unwind | Back and forward through the recorded states |
 | Clear Breakpoints | Removes every breakpoint |
 | Break at | A symbol name or hex address, then <kbd>Enter</kbd> |
-| Load Symbols | Reads a DASM `.sym` or `.lst` file next to the cartridge |
+| Load Symbols | Reads a DASM `.sym` or `.lst` file next to the cartridge (a batari Basic program's `.bas.sym` too) |
 | Clear Symbols | Drops the loaded symbols |
 | Pop Out | Moves the tab that shows into a window of its own; **Dock** in that window puts it back |
 | Help | Opens the topic of the tab that shows |
@@ -432,6 +432,33 @@ current instruction is in the app's accent colour and a breakpoint is a red dot
 in the margin (a grey hollow one when it is disabled); click a line to toggle
 its breakpoint. The bank chooser picks the bank shown, and **Follow PC** keeps
 the current line in view.
+
+<!-- context: debugger/basic -->
+## BASIC
+
+Debug a batari Basic program by its source. **Import File...** takes a `.bas`
+file and **Import Folder...** a folder of them; the program's listing (the
+`.bas.lst` that `2600basic.sh` leaves beside the `.bas`, with its `.bas.sym`)
+is found next to it, and **Load Map...** picks a listing by hand. Loading a
+cartridge whose `.bas` sits beside it imports that for you. The `.sym` gives
+the variables their source names in Memory, Watches and the Console.
+
+The source shows with a red dot on every line that has a breakpoint (a grey
+hollow one when it is disabled) and the line the machine is on in the app's
+accent colour; click a line to toggle its breakpoint. Lines with no code, such
+as labels, `rem` and `dim`, are dimmed and cannot hold one.
+
+While this tab shows, **Step** (<kbd>F7</kbd>), **Step Over** (<kbd>F8</kbd>)
+and **Step Out** (<kbd>Shift+F8</kbd>) go by BASIC line instead of by
+instruction: Step runs to the next line, into a `gosub`; Step Over does not go
+into one (`drawscreen` runs a whole frame); Step Out runs until the routine
+returns. A breakpoint or **Stop** ends a step early, and the line at the top
+says why it stopped.
+
+The line numbers come from a compiler newer than batari Basic 1.7, which writes
+`;;line N;;` into the listing. An older one is matched to the source by text,
+which can go wrong when two lines read the same; rebuild with a current
+`2600basic` for exact lines.
 
 <!-- context: debugger/memory -->
 ## Memory

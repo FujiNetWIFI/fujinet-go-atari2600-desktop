@@ -26,6 +26,15 @@ target_include_directories(memtools_test PRIVATE
 target_link_libraries(memtools_test PRIVATE Threads::Threads)
 add_test(NAME memtools COMMAND memtools_test)
 
+# The batari Basic source map: dasm listings (new and old marker formats)
+# against the real fixtures in data/bbasic. Pure.
+add_executable(srcmap_test srcmap_test.c "${CMAKE_SOURCE_DIR}/core/src/srcmap.c")
+target_include_directories(srcmap_test PRIVATE "${CMAKE_SOURCE_DIR}/core/include")
+target_compile_definitions(srcmap_test PRIVATE
+  BBASIC_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/bbasic")
+target_link_libraries(srcmap_test PRIVATE Threads::Threads)
+add_test(NAME srcmap COMMAND srcmap_test)
+
 # These need the session layer, which needs SDL3. On a build without it
 # (a cross-toolchain, or a lean machine) the core's own tests still run.
 if(TARGET a2600_session)
@@ -85,6 +94,14 @@ add_executable(debug_test debug_test.c)
 target_link_libraries(debug_test PRIVATE a2600_session)
 add_test(NAME debug COMMAND debug_test)
 set_tests_properties(debug PROPERTIES TIMEOUT 120)
+
+# BASIC line stepping on real batari Basic cartridges (data/bbasic).
+add_executable(bbstep_test bbstep_test.c)
+target_link_libraries(bbstep_test PRIVATE a2600_session)
+target_compile_definitions(bbstep_test PRIVATE
+  BBASIC_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/bbasic")
+add_test(NAME bbstep COMMAND bbstep_test)
+set_tests_properties(bbstep PROPERTIES TIMEOUT 120)
 
 # The Video tab's controller (core/src/vidtab.c): the TIA's priority encoder
 # replayed from synthetic captures, the views, the inspector, the tables and

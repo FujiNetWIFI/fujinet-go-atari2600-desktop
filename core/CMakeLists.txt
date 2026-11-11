@@ -172,6 +172,7 @@ set(A2600_SESSION_C_SOURCES
   src/m6502dasm.c
   src/help.c
   src/vidtab.c
+  src/srcmap.c
   "${A2600_HELP_C}")
 set(A2600_SESSION_CXX_SOURCES
   src/session.cpp
