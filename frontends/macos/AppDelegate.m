@@ -211,7 +211,7 @@
  * are still down. */
 - (void)windowDidResignKey:(NSNotification *)note
 {
-    if (note.object == _window) a2600session_release_all(_session);
+    if (_session && note.object == _window) a2600session_release_all(_session);
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)app
@@ -223,11 +223,17 @@
 - (void)applicationWillTerminate:(NSNotification *)note
 {
     (void)note;
+    /* Close the windows while the session is alive: AppKit closes them after
+     * this returns, and their resign-key / will-close handlers use it. */
+    _window.delegate = nil;
+    for (NSWindow *w in [[NSApp windows] copy])
+        if (w != _window) [w close];
     [_statusTimer invalidate];
     [_sysactTimer invalidate];
     [_display stop];
     a2600session_stop(_session);
     a2600session_free(_session);
+    _session = NULL;
 }
 
 - (BOOL)application:(NSApplication *)app openFile:(NSString *)filename

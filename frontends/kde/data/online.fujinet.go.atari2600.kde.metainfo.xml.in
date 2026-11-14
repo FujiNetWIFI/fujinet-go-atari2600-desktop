@@ -56,7 +56,14 @@
     <!-- The CURRENT release templates its version from @PROJECT_VERSION@, so
          it cannot disagree with the tree; past releases are literal. The
          release job checks that this first entry is still a template. -->
-    <release version="@PROJECT_VERSION@" date="2026-11-11">
+    <release version="@PROJECT_VERSION@" date="2026-11-13">
+      <description>
+        <p>
+          Fixed a crash when quitting the app on macOS.
+        </p>
+      </description>
+    </release>
+    <release version="0.8.1" date="2026-11-11">
       <description>
         <p>
           Fixed: some games started with a garbled screen, running slowly, when the TV format is Auto (the default) or when booted from CONFIG over FujiNet. Combat showed a broken playfield with no score or tanks. The emulator now restores the machine correctly after it detects whether a game is NTSC or PAL.
