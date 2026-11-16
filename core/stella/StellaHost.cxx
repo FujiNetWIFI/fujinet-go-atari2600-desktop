@@ -18,6 +18,7 @@
   #include <timeapi.h>
 #endif
 
+#include "apple_realtime.h"
 #include "CartFUJI.hxx"
 #include "Console.hxx"
 #include "Debugger.hxx"
@@ -144,6 +145,7 @@ bool StellaHost::start(const Config& config, std::string& error)
 
 void StellaHost::threadBody(std::promise<std::string>& ready)
 {
+  apple_realtime_begin(1e9 / 60.0);   // a real-time slot on macOS; a no-op elsewhere
   {
     myThreadId = std::this_thread::get_id();
 
