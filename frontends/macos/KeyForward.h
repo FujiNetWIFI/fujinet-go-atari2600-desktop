@@ -18,3 +18,8 @@ uint32_t A2600KeysymFromFlagsChange(NSEvent *event, int *down);
 
 /* The family's accent colour (#ffa645). */
 NSColor *A2600AccentColor(void);
+
+/* Implemented by controllers/ControllersWindow.m: while Map waits for a key,
+ * binds it and returns YES. F9, F11 and F12 are never taken. Called by the
+ * machine window and the Controllers panel before they forward a key. */
+BOOL A2600ControllersMapKey(uint32_t keysym);

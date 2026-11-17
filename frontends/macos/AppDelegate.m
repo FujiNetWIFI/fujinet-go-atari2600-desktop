@@ -11,7 +11,8 @@
 #import "KeyForward.h"
 #import "debugger/DebuggerWindow.h"
 #import "help/HelpWindow.h"
-#import "keypad/KeypadWindow.h"
+#import "InputSettings.h"
+#import "controllers/ControllersWindow.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -27,9 +28,10 @@
 @property (nonatomic, weak) A2600AppDelegate *owner;
 @end
 
-@interface A2600AppDelegate ()
+@interface A2600AppDelegate () <NSTabViewDelegate>
 - (void)runSysaction:(int)sa;
 - (void)loadMedia:(NSString *)path;
+- (void)toggleControllers:(id)sender;
 @end
 
 @implementation A2600ContentView
@@ -39,11 +41,15 @@
 - (void)keyDown:(NSEvent *)e
 {
     if ([e isARepeat]) return;
+    /* Command shortcuts are the menus'; AppKit sends no keyUp while Command is
+     * down, so forwarding one would leave the machine holding the key. */
+    if ([e modifierFlags] & NSEventModifierFlagCommand) return;
     const uint32_t ks = A2600KeysymFromEvent(e);
     if (!ks) return;
-    if (ks == A2600_KEYSYM_F9) { [A2600KeypadWindow toggleWithSession:self.session]; return; }
+    if (ks == A2600_KEYSYM_F9) { [self.owner toggleControllers:nil]; return; }
     if (ks == A2600_KEYSYM_F11) { [[self window] toggleFullScreen:nil]; return; }
     if (ks == A2600_KEYSYM_F12) { [A2600DebuggerWindow showForSession:self.session]; return; }
+    if (A2600ControllersMapKey(ks)) return;     /* Map is waiting for a key */
 
     const int sa = a2600session_key_sysaction(self.session, ks);
     if (sa >= 0) { [self.owner runSysaction:sa]; return; }
@@ -62,7 +68,9 @@
 {
     int down = 0;
     const uint32_t ks = A2600KeysymFromFlagsChange(e, &down);
-    if (ks) a2600session_key(self.session, ks, down);
+    if (!ks) return;
+    if (down && A2600ControllersMapKey(ks)) return;
+    a2600session_key(self.session, ks, down);
 }
 
 - (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender
@@ -95,10 +103,12 @@
     NSWindow *_settingsWindow;
     BOOL _sessionDirty;
     NSTextField *_externalField;
-    NSPopUpButton *_padList, *_padPort;
-    NSTextField *_portNote[2];
-    NSTimer *_settingsTimer;
-    unsigned _padGeneration;
+    A2600InputPane *_inputPane;      /* the Settings window's Input tab */
+
+    A2600ControllersWindow *_controllers;
+    NSTextField *_toast;             /* over the picture, fades */
+    unsigned _toastGeneration;       /* the pad generation already toasted */
+    NSUInteger _toastSerial;
 
     NSWindow *_logWindow;
     NSTextView *_logView;
@@ -147,6 +157,10 @@
     [_display setTvAspect:a2600session_get_int(_session, "tv_aspect", 1) != 0];
     [_display setSmooth:a2600session_get_int(_session, "smooth", 0) != 0];
     [_content addSubview:_display];
+    /* layer-backed, so the display's layer and the toast over it composite in
+     * the order they were added */
+    [_content setWantsLayer:YES];
+    [self buildToast:_content];
 
     [_window setContentView:_content];
     [self buildMenu];
@@ -164,34 +178,105 @@
         [a runModal];
     }
 
+    __weak A2600AppDelegate *weakSelf = self;
+    _controllers = [[A2600ControllersWindow alloc]
+        initWithSession:_session
+                appKeys:^BOOL(uint32_t keysym) { return [weakSelf handleAppKey:keysym]; }];
+    _controllers.sysactionHandler = ^(int sysact) { [weakSelf runSysaction:sysact]; };
+    /* No toast for the pads already attached at launch. */
+    _toastGeneration = a2600session_gamepad_generation(_session);
+
     /* The family's launch hooks, for when the app misbehaves before a menu
-     * is reachable. */
-    if (getenv("A2600_OPEN_KEYPAD")) [A2600KeypadWindow toggleWithSession:_session];
+     * is reachable. A2600_OPEN_KEYPAD is the older name of the first. */
+    if (getenv("A2600_OPEN_CONTROLLERS") || getenv("A2600_OPEN_KEYPAD")) [_controllers toggle];
     if (getenv("A2600_OPEN_DEBUGGER")) [A2600DebuggerWindow showForSession:_session];
     if (getenv("A2600_OPEN_SETTINGS")) [self showSettings:nil];
 
     _statusTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES
         block:^(NSTimer *t) { (void)t; [self updateTitle]; }];
-    /* System actions the gamepad thread resolved (it cannot touch AppKit). */
-    _sysactTimer = [NSTimer scheduledTimerWithTimeInterval:0.1 repeats:YES
-        block:^(NSTimer *t) {
-            (void)t;
-            int sa;
-            while (a2600session_sysaction_take(self->_session, &sa)) [self runSysaction:sa];
-        }];
+    /* System actions the gamepad thread resolved (it cannot touch AppKit), and a
+     * toast when a gamepad came or went: well inside 50 ms. */
+    _sysactTimer = [NSTimer scheduledTimerWithTimeInterval:0.05 repeats:YES
+        block:^(NSTimer *t) { (void)t; [self sysactTick]; }];
+    _sysactTimer.tolerance = 0.01;
     [self updateTitle];
 }
 
 - (void)runSysaction:(int)sa
 {
     switch (sa) {
-    case A2600_SYSACT_REBOOT_CONFIG: a2600session_sysaction(_session, sa); break;
+    case A2600_SYSACT_REBOOT_CONFIG:
+        a2600session_sysaction(_session, sa);
+        [self showToast:@"Reboot to CONFIG"];
+        break;
     case A2600_SYSACT_PAUSE:
         [A2600DebuggerWindow showForSession:_session];
         a2600session_sysaction(_session, sa);
         break;
     default: break;
     }
+}
+
+/* What the 50 ms timer does: the console actions a gamepad button or a bound
+ * key posted, and a toast when a gamepad came or went. */
+- (void)sysactTick
+{
+    int sa;
+    while (a2600session_sysaction_take(_session, &sa)) [self runSysaction:sa];
+    const unsigned gen = a2600session_gamepad_generation(_session);
+    if (gen != _toastGeneration) {
+        _toastGeneration = gen;
+        char msg[160];
+        if (a2600session_gamepad_last_event(_session, msg, (int)sizeof msg) > 0)
+            [self showToast:[NSString stringWithUTF8String:msg]];
+    }
+}
+
+/* The toast: a label over the top of the picture that fades. */
+- (void)buildToast:(NSView *)content
+{
+    _toast = [NSTextField labelWithString:@""];
+    _toast.font = [NSFont boldSystemFontOfSize:13];
+    _toast.textColor = NSColor.whiteColor;
+    _toast.drawsBackground = YES;
+    _toast.backgroundColor = [NSColor colorWithWhite:0.0 alpha:0.7];
+    _toast.alignment = NSTextAlignmentCenter;
+    _toast.alphaValue = 0.0;
+    [_toast setFrame:NSMakeRect(0, content.bounds.size.height - 34, content.bounds.size.width, 26)];
+    [_toast setAutoresizingMask:NSViewWidthSizable | NSViewMinYMargin];
+    [content addSubview:_toast];
+}
+
+- (void)showToast:(NSString *)text
+{
+    if (!text) return;
+    _toast.stringValue = text;
+    _toast.alphaValue = 1.0;
+    const NSUInteger serial = ++_toastSerial;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        /* a newer message restarts the clock */
+        if (serial != self->_toastSerial) return;
+        [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
+            ctx.duration = 0.5;
+            self->_toast.animator.alphaValue = 0.0;
+        } completionHandler:nil];
+    });
+}
+
+/* F9 and F12 are the app's and not bindable; called with a key typed in the
+ * Controllers panel. YES when taken. */
+- (BOOL)handleAppKey:(uint32_t)keysym
+{
+    if (keysym == A2600_KEYSYM_F9) {
+        [_controllers toggle];
+        return YES;
+    }
+    if (keysym == A2600_KEYSYM_F12) {
+        [A2600DebuggerWindow showForSession:_session];
+        return YES;
+    }
+    return NO;
 }
 
 - (void)updateTitle
@@ -238,6 +323,8 @@
         if (w != _window) [w close];
     [_statusTimer invalidate];
     [_sysactTimer invalidate];
+    [_inputPane stop];
+    _controllers = nil;
     [_display stop];
     if (_activity) {
         [[NSProcessInfo processInfo] endActivity:_activity];
@@ -295,7 +382,7 @@
 
     NSMenuItem *viewItem = [[NSMenuItem alloc] init];
     NSMenu *view = [[NSMenu alloc] initWithTitle:@"View"];
-    [self item:view title:@"Keypads" action:@selector(toggleKeypad:) key:@"k"];
+    [self item:view title:@"Controllers (F9)" action:@selector(toggleControllers:) key:@"k"];
     [self item:view title:@"Debugger" action:@selector(showDebugger:) key:@"d"];
     [view addItem:[NSMenuItem separatorItem]];
     NSMenuItem *tv = [self item:view title:@"TV Aspect (4:3)" action:@selector(toggleAspect:) key:@""];
@@ -334,8 +421,8 @@
     [[A2600HelpWindow shared] showFor:[NSApp keyWindow]];
 }
 
-/* The console switches can be flipped from the keyboard and the keypad
- * window too, so the menu reads their position when it opens. */
+/* The console switches can be flipped from the keyboard and the Controllers
+ * panel too, so the menu reads their position when it opens. */
 - (BOOL)validateMenuItem:(NSMenuItem *)item
 {
     if (item == _colorItem)
@@ -419,7 +506,7 @@
 - (void)toggleLeftDiff:(id)sender { (void)sender; [self flipSwitch:A2600_SW_LEFT_DIFF]; }
 - (void)toggleRightDiff:(id)sender { (void)sender; [self flipSwitch:A2600_SW_RIGHT_DIFF]; }
 
-- (void)toggleKeypad:(id)sender { (void)sender; [A2600KeypadWindow toggleWithSession:_session]; }
+- (void)toggleControllers:(id)sender { (void)sender; [_controllers toggle]; }
 - (void)showDebugger:(id)sender { (void)sender; [A2600DebuggerWindow showForSession:_session]; }
 
 - (void)toggleAspect:(id)sender
@@ -484,52 +571,6 @@
     return box;
 }
 
-- (void)updatePortNotes
-{
-    for (int port = 0; port < 2; port++) {
-        if (a2600session_port_type(_session, port) == A2600_CTRL_AUTO)
-            _portNote[port].stringValue = [NSString stringWithFormat:@"Auto: Stella attached %s",
-                a2600_ctrl_type_name(a2600session_detected_port_type(_session, port))];
-        else
-            _portNote[port].stringValue = @"Forced for every cartridge";
-    }
-}
-
-- (void)refreshPadList
-{
-    const NSInteger sel = _padList.indexOfSelectedItem;
-    [_padList removeAllItems];
-    const int n = a2600session_gamepad_count(_session);
-    if (n == 0) [_padList addItemWithTitle:@"(no gamepads connected)"];
-    for (int i = 0; i < n; i++) {
-        char name[128];
-        const int eff = a2600session_gamepad_effective_port(_session, i);
-        a2600session_gamepad_name(_session, i, name, sizeof name);
-        /* Menu items with equal titles collapse; the index keeps them apart. */
-        [_padList addItemWithTitle:[NSString stringWithFormat:@"%d: %s  [%s port]", i + 1, name,
-                                    eff == 0 ? "left" : eff == 1 ? "right" : "no"]];
-    }
-    if (sel >= 0 && sel < n) [_padList selectItemAtIndex:sel];
-    [self padSelected:nil];
-}
-
-- (void)padSelected:(id)sender
-{
-    (void)sender;
-    const NSInteger sel = _padList.indexOfSelectedItem;
-    if (sel >= 0 && sel < a2600session_gamepad_count(_session))
-        [_padPort selectItemAtIndex:a2600session_gamepad_assignment(_session, (int)sel) + 1];
-}
-
-- (void)padPortChanged:(id)sender
-{
-    (void)sender;
-    const NSInteger sel = _padList.indexOfSelectedItem;
-    if (sel >= 0 && sel < a2600session_gamepad_count(_session))
-        a2600session_gamepad_assign(_session, (int)sel, (int)_padPort.indexOfSelectedItem - 1);
-    [self refreshPadList];
-}
-
 - (void)volumeChanged:(NSSlider *)sender
 {
     a2600session_set_volume(_session, (int)sender.integerValue);
@@ -546,21 +587,9 @@
     else
         value = ((NSButton *)control).state == NSControlStateValueOn ? 1 : 0;
 
-    if (!strcmp(key, "port0_type") || !strcmp(key, "port1_type")) {
-        a2600session_set_port_type(_session, key[4] == '1', value);
-        [self updatePortNotes];
-        return;
-    }
     a2600session_set_int(_session, key, value);
     if (!strcmp(key, "fujinet_external"))
         _externalField.enabled = value != 0;
-    if (!strncmp(key, "analog_", 7)) {
-        a2600session_set_analog(_session,
-                                a2600session_get_int(_session, "analog_joystick", 1),
-                                a2600session_get_int(_session, "analog_paddle", 1),
-                                a2600session_get_int(_session, "analog_driving", 1));
-        return;
-    }
     _sessionDirty = YES;
 }
 
@@ -608,28 +637,9 @@
         return;
     }
 
-    _portNote[0] = [self note:@""];
-    _portNote[1] = [self note:@""];
-    _padList = [[NSPopUpButton alloc] init];
-    _padList.target = self;
-    _padList.action = @selector(padSelected:);
-    _padPort = [[NSPopUpButton alloc] init];
-    [_padPort addItemsWithTitles:@[@"Automatic", @"Left port", @"Right port"]];
-    _padPort.target = self;
-    _padPort.action = @selector(padPortChanged:);
-
     NSSlider *volume = [NSSlider sliderWithValue:a2600session_get_int(_session, "volume", 100)
                                         minValue:0 maxValue:100 target:self action:@selector(volumeChanged:)];
     [volume.widthAnchor constraintEqualToConstant:220].active = YES;
-
-    NSStackView *analog = [NSStackView stackViewWithViews:@[
-        [self checkBoxForKey:"analog_joystick" title:@"Joystick" fallback:1],
-        [self checkBoxForKey:"analog_paddle" title:@"Paddles" fallback:1],
-        [self checkBoxForKey:"analog_driving" title:@"Driving" fallback:1]]];
-    analog.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-
-    NSStackView *padRow = [NSStackView stackViewWithViews:@[_padList, _padPort]];
-    padRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
 
     _externalField = [NSTextField textFieldWithString:@(
         a2600session_get_str(_session, "fujinet_external_addr", ""))];
@@ -644,15 +654,6 @@
         @[ [self sectionLabel:@"Machine"], [self note:@"applied by restarting the session"] ],
         @[ [NSTextField labelWithString:@"TV format"],
            [self popUpForKey:"tv_format" fallback:A2600_TV_AUTO names:a2600_tv_format_name] ],
-        @[ [self sectionLabel:@"Controllers"], [self note:@"applied immediately"] ],
-        @[ [NSTextField labelWithString:@"Left port"],
-           [self popUpForKey:"port0_type" fallback:A2600_CTRL_AUTO names:a2600_ctrl_type_name] ],
-        @[ [NSTextField labelWithString:@""], _portNote[0] ],
-        @[ [NSTextField labelWithString:@"Right port"],
-           [self popUpForKey:"port1_type" fallback:A2600_CTRL_AUTO names:a2600_ctrl_type_name] ],
-        @[ [NSTextField labelWithString:@""], _portNote[1] ],
-        @[ [NSTextField labelWithString:@"Analog sticks drive"], analog ],
-        @[ [NSTextField labelWithString:@"Gamepads"], padRow ],
         @[ [NSTextField labelWithString:@"Volume"], volume ],
         @[ [self sectionLabel:@"Host"], [self note:@"applied by restarting the session"] ],
         @[ [NSTextField labelWithString:@""], [self checkBoxForKey:"enable_fujinet" title:@"Enable FujiNet" fallback:1] ],
@@ -660,7 +661,6 @@
            [self checkBoxForKey:"fujinet_external" title:@"Use external FujiNet" fallback:0] ],
         @[ [NSTextField labelWithString:@"Address:port"], _externalField ],
         @[ [NSTextField labelWithString:@""], [self checkBoxForKey:"enable_audio" title:@"Audio" fallback:1] ],
-        @[ [NSTextField labelWithString:@""], [self checkBoxForKey:"enable_gamepad" title:@"Gamepads" fallback:1] ],
     ];
 
     NSGridView *grid = [NSGridView gridViewWithViews:rows];
@@ -674,35 +674,73 @@
     root.edgeInsets = NSEdgeInsetsMake(16, 16, 16, 16);
 
     _settingsWindow = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(0, 0, 560, 520)
+        initWithContentRect:NSMakeRect(0, 0, 600, 480)
                   styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
                     backing:NSBackingStoreBuffered
                       defer:NO];
     _settingsWindow.title = @"Settings";
     _settingsWindow.releasedWhenClosed = NO;
     _settingsWindow.delegate = self;
-    {
-        /* the settings over a strip with the Help button */
-        NSButton *helpBtn = A2600HelpButton(@"prefs/Machine");
-        NSStackView *wrap = [NSStackView stackViewWithViews:@[root, helpBtn]];
-        wrap.orientation = NSUserInterfaceLayoutOrientationVertical;
-        wrap.alignment = NSLayoutAttributeLeading;
-        wrap.edgeInsets = NSEdgeInsetsMake(0, 16, 12, 16);
-        _settingsWindow.contentView = wrap;
-        A2600SetHelpContext(_settingsWindow, @"prefs/Machine");
-    }
+
+    /* the machine and host settings over a strip with the Help button */
+    NSButton *helpBtn = A2600HelpButton(@"prefs/Machine");
+    NSStackView *wrap = [NSStackView stackViewWithViews:@[root, helpBtn]];
+    wrap.orientation = NSUserInterfaceLayoutOrientationVertical;
+    wrap.alignment = NSLayoutAttributeLeading;
+    wrap.edgeInsets = NSEdgeInsetsMake(0, 16, 12, 16);
+    const NSSize fit = [wrap fittingSize];
+    const CGFloat machineH = fit.height > 330 ? fit.height : 330;
+    NSView *machineView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 580, machineH)];
+    [wrap setFrame:NSMakeRect(0, machineH - fit.height, fit.width, fit.height)];
+    /* AppKit resizes a tab's view to the tab; the options stay at the top */
+    [wrap setAutoresizingMask:NSViewMinYMargin];
+    [machineView addSubview:wrap];
+
+    __weak A2600AppDelegate *weakSelf = self;
+    [_inputPane stop];
+    _inputPane = [[A2600InputPane alloc]
+        initWithSession:_session
+               controls:^(BOOL open) {
+                   A2600AppDelegate *strong = weakSelf;
+                   if (!strong) return;
+                   if (open) {
+                       [strong->_controllers show];
+                   } else {
+                       [strong->_controllers refresh];
+                       [strong showToast:@"Default controls restored"];
+                   }
+               }
+                changed:^{
+                    A2600AppDelegate *strong = weakSelf;
+                    if (strong) [strong->_controllers refresh];
+                }
+                restart:^{
+                    A2600AppDelegate *strong = weakSelf;
+                    if (strong) strong->_sessionDirty = YES;
+                }];
+
+    NSTabView *tabs = [[NSTabView alloc] initWithFrame:NSMakeRect(0, 0, 600, 480)];
+    tabs.delegate = self;
+    NSTabViewItem *machineItem = [[NSTabViewItem alloc] initWithIdentifier:@"machine"];
+    machineItem.label = @"Machine";
+    machineItem.view = machineView;
+    [tabs addTabViewItem:machineItem];
+    NSTabViewItem *inputItem = [[NSTabViewItem alloc] initWithIdentifier:@"input"];
+    inputItem.label = @"Input";
+    inputItem.view = _inputPane.view;
+    [tabs addTabViewItem:inputItem];
+    _settingsWindow.contentView = tabs;
+    A2600SetHelpContext(_settingsWindow, @"prefs/Machine");
     [_settingsWindow center];
 
-    [self updatePortNotes];
-    _padGeneration = a2600session_gamepad_generation(_session);
-    [self refreshPadList];
-    _settingsTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {
-        (void)t;
-        const unsigned gen = a2600session_gamepad_generation(self->_session);
-        if (gen != self->_padGeneration) { self->_padGeneration = gen; [self refreshPadList]; }
-        [self updatePortNotes];
-    }];
     [_settingsWindow makeKeyAndOrderFront:nil];
+}
+
+/* Command+? and the Help button follow the tab. */
+- (void)tabView:(NSTabView *)tabView didSelectTabViewItem:(NSTabViewItem *)item
+{
+    (void)tabView;
+    A2600SetHelpContext(_settingsWindow, [item.identifier isEqual:@"input"] ? @"prefs/Input" : @"prefs/Machine");
 }
 
 - (void)windowWillClose:(NSNotification *)note
@@ -714,8 +752,8 @@
     }
     if (note.object != _settingsWindow) return;
     [_settingsWindow makeFirstResponder:nil]; /* commit a field edit */
-    [_settingsTimer invalidate];
-    _settingsTimer = nil;
+    [_inputPane stop];
+    _inputPane = nil;
     if (!_sessionDirty) return;
     _sessionDirty = NO;
 
