@@ -13,11 +13,13 @@
 #include "prefs.h"
 
 #include "window.h"
+#include "controllers/controllers_window.h"
 #include "help/help_window.h"
 
 typedef struct {
     A2600Window *window;
     a2600session *session;
+    AdwDialog *dialog;
     void (*restart)(A2600Window *window);
     gboolean dirty;
     GtkWidget *pad_group;
@@ -236,6 +238,36 @@ static gboolean pad_tick(gpointer user_data)
     return G_SOURCE_CONTINUE;
 }
 
+static void on_open_controllers(GtkButton *button, gpointer user_data)
+{
+    PrefsState *state = user_data;
+    (void)button;
+    a2600_controllers_show(GTK_WINDOW(state->window), state->session);
+}
+
+static void on_reset_controls(GtkButton *button, gpointer user_data)
+{
+    PrefsState *state = user_data;
+    (void)button;
+    a2600session_bindings_reset(state->session);
+    adw_preferences_dialog_add_toast(ADW_PREFERENCES_DIALOG(state->dialog),
+                                     adw_toast_new("Controls back to their defaults"));
+}
+
+/* A row with a title, a line under it and a button. */
+static GtkWidget *button_row(const char *title, const char *subtitle, const char *label,
+                             GCallback cb, gpointer data)
+{
+    GtkWidget *row = adw_action_row_new();
+    GtkWidget *button = gtk_button_new_with_label(label);
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), title);
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
+    gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
+    g_signal_connect(button, "clicked", cb, data);
+    adw_action_row_add_suffix(ADW_ACTION_ROW(row), button);
+    return row;
+}
+
 static void prefs_closed(AdwDialog *dialog, gpointer user_data)
 {
     PrefsState *state = user_data;
@@ -252,6 +284,8 @@ void a2600_prefs_show(A2600Window *parent, a2600session *session,
     PrefsState *state = g_new0(PrefsState, 1);
     AdwPreferencesDialog *dialog = ADW_PREFERENCES_DIALOG(adw_preferences_dialog_new());
     AdwPreferencesPage *page = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
+    AdwPreferencesPage *input = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
+    AdwPreferencesGroup *controls = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
     AdwPreferencesGroup *machine = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
     AdwPreferencesGroup *ports = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
     AdwPreferencesGroup *analog = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
@@ -263,6 +297,7 @@ void a2600_prefs_show(A2600Window *parent, a2600session *session,
     state->session = session;
     state->restart = restart;
     state->pad_group = GTK_WIDGET(pads);
+    state->dialog = ADW_DIALOG(dialog);
 
     adw_dialog_set_title(ADW_DIALOG(dialog), "Preferences");
     adw_dialog_set_content_width(ADW_DIALOG(dialog), 560);
@@ -278,7 +313,12 @@ void a2600_prefs_show(A2600Window *parent, a2600session *session,
         combo_row(state, "TV format", "Auto lets each cartridge decide (frame layout detection)",
                   "tv_format", A2600_TV_AUTO, a2600_tv_format_name, -1));
 
+    adw_preferences_page_set_title(input, "Input");
+    adw_preferences_page_set_name(input, "Input");
+    adw_preferences_page_set_icon_name(input, "input-gaming-symbolic");
+
     adw_preferences_group_set_title(ports, "Controllers");
+    adw_preferences_group_set_header_suffix(ports, a2600_help_button("prefs/Input"));
     adw_preferences_group_set_description(ports,
         "What is plugged into each port. Applies immediately, even to a game "
         "booted over FujiNet.");
@@ -304,7 +344,10 @@ void a2600_prefs_show(A2600Window *parent, a2600session *session,
 
     adw_preferences_group_set_title(pads, "Gamepads");
     adw_preferences_group_set_description(pads,
-        "Assigned to ports in connection order unless chosen here");
+        "Assigned to ports in connection order unless chosen here. Enable gamepads "
+        "is read when the session starts, so changing it restarts the session on close.");
+    adw_preferences_group_add(pads,
+        switch_row(state, "Enable gamepads", "Poll USB and Bluetooth gamepads", "enable_gamepad", 1, 0));
     rebuild_pad_rows(state);
     state->pad_generation = a2600session_gamepad_generation(session);
 
@@ -346,16 +389,33 @@ void a2600_prefs_show(A2600Window *parent, a2600session *session,
     }
     adw_preferences_group_add(host,
         switch_row(state, "Audio", "Open the system audio device", "enable_audio", 1, 0));
-    adw_preferences_group_add(host,
-        switch_row(state, "Gamepads", "Poll USB/Bluetooth gamepads", "enable_gamepad", 1, 0));
+
+    adw_preferences_group_set_title(controls, "Controls");
+    adw_preferences_group_set_description(controls,
+        "Keys and gamepad buttons are re-mapped in the Controllers window (F9): press Map, "
+        "choose a control, then press the key or gamepad button to give it.");
+    adw_preferences_group_add(controls,
+        button_row("Controllers window", "The controllers and console, and Map", "Open Controllers",
+                   G_CALLBACK(on_open_controllers), state));
+    adw_preferences_group_add(controls,
+        button_row("Reset Controls", "Put every key and gamepad button back to its default",
+                   "Reset Controls", G_CALLBACK(on_reset_controls), state));
 
     adw_preferences_page_add(page, machine);
-    adw_preferences_page_add(page, ports);
-    adw_preferences_page_add(page, analog);
-    adw_preferences_page_add(page, pads);
     adw_preferences_page_add(page, audio);
     adw_preferences_page_add(page, host);
+    adw_preferences_page_add(input, ports);
+    adw_preferences_page_add(input, analog);
+    adw_preferences_page_add(input, pads);
+    adw_preferences_page_add(input, controls);
     adw_preferences_dialog_add(dialog, page);
+    adw_preferences_dialog_add(dialog, input);
+    /* A2600_OPEN_PREFS=Input opens on that page (a developer affordance) */
+    {
+        const char *open = g_getenv("A2600_OPEN_PREFS");
+        if (open && g_strcmp0(open, "Input") == 0)
+            adw_preferences_dialog_set_visible_page_name(dialog, open);
+    }
     g_signal_connect(dialog, "closed", G_CALLBACK(prefs_closed), state);
     state->pad_timer = g_timeout_add(1000, pad_tick, state);
     adw_dialog_present(ADW_DIALOG(dialog), GTK_WIDGET(parent));

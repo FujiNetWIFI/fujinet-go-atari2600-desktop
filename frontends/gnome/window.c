@@ -19,7 +19,7 @@
 #include "help/help_window.h"
 #include "prefs.h"
 #include "debugger/dbg_window.h"
-#include "keypad/keypad_window.h"
+#include "controllers/controllers_window.h"
 
 #include <string.h>
 
@@ -33,6 +33,7 @@ struct _A2600Window {
     GtkWidget *status_dot;
     guint status_id;
     guint sysact_id;
+    unsigned pad_generation;    /* the last pad hot-plug a toast was shown for */
     gboolean sysact_down[A2600_SYSACT_COUNT];
     gboolean fullscreen;
 };
@@ -94,14 +95,29 @@ static void run_sysaction(A2600Window *self, int sa)
     }
 }
 
-static gboolean on_key_pressed(GtkEventControllerKey *ctrl, guint keyval,
-                               guint keycode, GdkModifierType state,
-                               gpointer user_data)
+/* One key path for the main window and the Controllers window. Map mode takes a
+ * key first (the key to bind, or Escape); then the window's own keys, a system
+ * action, and last the machine. */
+gboolean a2600_window_key(A2600Window *self, guint keyval, guint keycode,
+                          GdkModifierType state, gboolean down)
 {
-    A2600Window *self = user_data;
     guint32 keysym;
     int sa;
-    (void)ctrl;
+
+    if (a2600_controllers_map_key(keyval, keycode, state, down))
+        return TRUE;
+
+    if (!down) {
+        if (keyval == GDK_KEY_F9 || keyval == GDK_KEY_F11 || keyval == GDK_KEY_F12)
+            return TRUE;
+        keysym = keysym_of(keyval, keycode);
+        sa = a2600session_key_sysaction(self->session, keysym);
+        if (sa >= 0) {
+            self->sysact_down[sa] = FALSE;
+            return TRUE;
+        }
+        return a2600session_key(self->session, keysym, 0) ? TRUE : FALSE;
+    }
 
     /* F1 is the console's SELECT in the window itself, and Help while
      * Preferences or another dialog is open */
@@ -114,7 +130,7 @@ static gboolean on_key_pressed(GtkEventControllerKey *ctrl, guint keyval,
     /* The window's own keys, deliberately not bindable: they are how you
      * reach the panels that do the binding. */
     if (keyval == GDK_KEY_F9) {
-        a2600_keypad_window_toggle(GTK_WINDOW(self), self->session);
+        a2600_controllers_toggle(GTK_WINDOW(self), self->session);
         return TRUE;
     }
     if (keyval == GDK_KEY_F12) {
@@ -143,44 +159,57 @@ static gboolean on_key_pressed(GtkEventControllerKey *ctrl, guint keyval,
     return a2600session_key(self->session, keysym, 1) ? TRUE : FALSE;
 }
 
+void a2600_window_release_keys(A2600Window *self)
+{
+    a2600session_release_all(self->session);
+    memset(self->sysact_down, 0, sizeof self->sysact_down);
+}
+
+void a2600_window_run_sysaction(A2600Window *self, int sysact)
+{
+    run_sysaction(self, sysact);
+}
+
+static gboolean on_key_pressed(GtkEventControllerKey *ctrl, guint keyval,
+                               guint keycode, GdkModifierType state,
+                               gpointer user_data)
+{
+    (void)ctrl;
+    return a2600_window_key(user_data, keyval, keycode, state, TRUE);
+}
+
 static gboolean on_key_released(GtkEventControllerKey *ctrl, guint keyval,
                                 guint keycode, GdkModifierType state,
                                 gpointer user_data)
 {
-    A2600Window *self = user_data;
-    guint32 keysym;
-    int sa;
-    (void)ctrl; (void)state;
-
-    if (keyval == GDK_KEY_F9 || keyval == GDK_KEY_F11 || keyval == GDK_KEY_F12)
-        return TRUE;
-    keysym = keysym_of(keyval, keycode);
-    sa = a2600session_key_sysaction(self->session, keysym);
-    if (sa >= 0) {
-        self->sysact_down[sa] = FALSE;
-        return TRUE;
-    }
-    return a2600session_key(self->session, keysym, 0) ? TRUE : FALSE;
+    (void)ctrl;
+    return a2600_window_key(user_data, keyval, keycode, state, FALSE);
 }
 
 /* Losing focus with keys held would leave the machine believing they are
  * still down. */
 static void on_focus_leave(GtkEventControllerFocus *ctrl, gpointer user_data)
 {
-    A2600Window *self = user_data;
     (void)ctrl;
-    a2600session_release_all(self->session);
-    memset(self->sysact_down, 0, sizeof self->sysact_down);
+    a2600_window_release_keys(user_data);
 }
 
 /* The gamepad thread cannot call into GTK; it posts system actions and this
- * timer takes them. */
+ * timer takes them. It also shows a toast when a gamepad comes or goes. */
 static gboolean sysact_drain_tick(gpointer user_data)
 {
     A2600Window *self = user_data;
+    unsigned gen;
     int sa;
     while (a2600session_sysaction_take(self->session, &sa))
         run_sysaction(self, sa);
+    gen = a2600session_gamepad_generation(self->session);
+    if (gen != self->pad_generation) {
+        char text[160];
+        self->pad_generation = gen;
+        if (a2600session_gamepad_last_event(self->session, text, sizeof text) > 0 && text[0])
+            a2600_window_toast(self, text);
+    }
     return G_SOURCE_CONTINUE;
 }
 
@@ -394,11 +423,11 @@ static void action_reboot_config(GSimpleAction *a, GVariant *p, gpointer user_da
     run_sysaction(user_data, A2600_SYSACT_REBOOT_CONFIG);
 }
 
-static void action_keypad(GSimpleAction *a, GVariant *p, gpointer user_data)
+static void action_controllers(GSimpleAction *a, GVariant *p, gpointer user_data)
 {
     A2600Window *self = user_data;
     (void)a; (void)p;
-    a2600_keypad_window_toggle(GTK_WINDOW(self), self->session);
+    a2600_controllers_toggle(GTK_WINDOW(self), self->session);
 }
 
 static void action_debugger(GSimpleAction *a, GVariant *p, gpointer user_data)
@@ -509,7 +538,13 @@ static void action_smooth(GSimpleAction *a, GVariant *p, gpointer user_data)
 const char *a2600_window_help_context(A2600Window *self)
 {
     AdwDialog *d = adw_application_window_get_visible_dialog(ADW_APPLICATION_WINDOW(self));
-    return d && ADW_IS_PREFERENCES_DIALOG(d) ? "prefs/Machine" : "main";
+    if (d && ADW_IS_PREFERENCES_DIALOG(d)) {
+        static char ctx[64];
+        const char *page = adw_preferences_dialog_get_visible_page_name(ADW_PREFERENCES_DIALOG(d));
+        g_snprintf(ctx, sizeof ctx, "prefs/%s", page ? page : "Machine");
+        return ctx;
+    }
+    return "main";
 }
 
 /* app.help: every window's Ctrl+Shift+H, for what it shows. Not a cast of
@@ -534,7 +569,7 @@ static const GActionEntry win_actions[] = {
     { "left-diff", action_left_diff, NULL, "false", NULL, { 0 } },
     { "right-diff", action_right_diff, NULL, "false", NULL, { 0 } },
     { "reboot-config", action_reboot_config, NULL, NULL, NULL, { 0 } },
-    { "keypad", action_keypad, NULL, NULL, NULL, { 0 } },
+    { "controllers", action_controllers, NULL, NULL, NULL, { 0 } },
     { "debugger", action_debugger, NULL, NULL, NULL, { 0 } },
     { "fullscreen", action_fullscreen, NULL, NULL, NULL, { 0 } },
     { "tv-aspect", action_aspect, NULL, "true", NULL, { 0 } },
@@ -569,7 +604,7 @@ static GMenu *build_menu(void)
     g_menu_append(sw, "Right Difficulty A", "win.right-diff");
     g_menu_append_section(menu, "Console Switches", G_MENU_MODEL(sw));
 
-    g_menu_append(view, "_Keypads (F9)", "win.keypad");
+    g_menu_append(view, "_Controllers (F9)", "win.controllers");
     g_menu_append(view, "_Debugger (F12)", "win.debugger");
     g_menu_append(view, "_TV Aspect (4:3)", "win.tv-aspect");
     g_menu_append(view, "_Smooth Scaling", "win.smooth");
@@ -713,16 +748,20 @@ GtkWidget *a2600_window_new(AdwApplication *app, a2600session *session)
     gtk_widget_add_controller(GTK_WIDGET(self), focus);
 
     self->status_id = g_timeout_add_seconds(1, update_status, self);
-    self->sysact_id = g_timeout_add(100, sysact_drain_tick, self);
+    self->pad_generation = a2600session_gamepad_generation(session);
+    self->sysact_id = g_timeout_add(50, sysact_drain_tick, self);
     update_status(self);
 
-    /* A2600_OPEN_KEYPAD=1 / A2600_OPEN_DEBUGGER=1 open those windows at
+    /* A2600_OPEN_CONTROLLERS=1 / A2600_OPEN_DEBUGGER=1 open those windows at
      * launch, following the family's convention: the way in when the app
-     * misbehaves before the menu is reachable. */
+     * misbehaves before the menu is reachable. (A2600_OPEN_KEYPAD, its old
+     * name, still works.) */
     {
-        const char *env = g_getenv("A2600_OPEN_KEYPAD");
+        const char *env = g_getenv("A2600_OPEN_CONTROLLERS");
+        if (!env || !*env)
+            env = g_getenv("A2600_OPEN_KEYPAD");
         if (env && *env && *env != '0')
-            a2600_keypad_window_toggle(GTK_WINDOW(self), session);
+            a2600_controllers_toggle(GTK_WINDOW(self), session);
         env = g_getenv("A2600_OPEN_DEBUGGER");
         if (env && *env && *env != '0')
             a2600_debugger_show(GTK_WINDOW(self), session);
