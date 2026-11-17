@@ -58,7 +58,17 @@
     <!-- The CURRENT release templates its version from @PROJECT_VERSION@, so
          it cannot disagree with the tree; past releases are literal. The
          release job checks that this first entry is still a template. -->
-    <release version="@PROJECT_VERSION@" date="2026-11-16">
+    <release version="@PROJECT_VERSION@" date="2026-11-17">
+      <description>
+        <p>
+          The Controllers window is drawn like the real Atari hardware: the CX40 joystick, the CX30 paddles, the CX20 driving controller and the CX50 keypad on each port (following the port type), and the six-switch console with its latched switches. Click, drag the stick or a knob, turn the driving wheel, and held controls light up.
+        </p>
+        <p>
+          USB gamepads can be assigned to the left or right port, including plain HID joystick adapters, and the choice is remembered; a message shows when a pad is plugged in or removed. A paddle held by a gamepad or the window now keeps its position. There is a new Input page in the settings.
+        </p>
+      </description>
+    </release>
+    <release version="0.9.0" date="2026-11-16">
       <description>
         <p>
           macOS: the picture is drawn with Metal in step with the display, so it is smoother on 60 and 120 Hz screens; the emulator runs with game-grade scheduling priority; and the app opts into macOS Game Mode when it is full screen.
