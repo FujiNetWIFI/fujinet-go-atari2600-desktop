@@ -11,7 +11,7 @@ family (`fujinet-go-adam-desktop`, `-apple2-`, `-coco-`, `-msx-`, `-intv-`,
 |---|---|
 | **Emulator** | [Stella](https://github.com/tschak909/stella) (branch `add-fujinet-support`), GPL-2.0-or-later, compiled as a library with its SDL frontend left out and its debugger engine kept. The FujiNet cartridge (`CartFUJI`) speaks the same mailbox protocol as the RP2040 cartridge, from the firmware's own vendored sources. |
 | **FujiNet** | The firmware's `RS232` PC target, built in-process as `libfujinet` and dialled by the cartridge over loopback (BoIP on 11504, web admin on 11505). |
-| **Frontends** | GNOME (GTK4/libadwaita), KDE (Qt6 Widgets), macOS (AppKit), Windows (Win32/Direct3D 11) — each with the display, a floating keypad window for both keyboard controllers, Preferences, a live FujiNet console log, and a debugger exposing every one of Stella's debugger commands. |
+| **Frontends** | GNOME (GTK4/libadwaita), KDE (Qt6 Widgets), macOS (AppKit), Windows (Win32/Direct3D 11) — each with the display, a floating Controllers window drawn like the real Atari controllers and console, Preferences, a live FujiNet console log, and a debugger exposing every one of Stella's debugger commands. |
 | **Packaging** | Per-frontend DEB/RPM/TGZ, two Flatpaks, a Windows zip and NSIS installer, and macOS bundles for **arm64 and x86_64**, all through GitHub Actions. |
 
 ## What it is
@@ -43,7 +43,7 @@ family (`fujinet-go-adam-desktop`, `-apple2-`, `-coco-`, `-msx-`, `-intv-`,
   and `A2600_BASIC_BREAK=name.bas:line` (with `A2600_DEBUGGER_TAB=BASIC`).
 - **Built-in Help.** **Help ▸ FujiNet Go Atari 2600 Help** (Ctrl+Shift+H,
   ⌘? on a Mac) opens a searchable Help, and the Help buttons in Preferences,
-  the Keypads window, the debugger and the console log open the topic for what
+  the Controllers window, the debugger and the console log open the topic for what
   they show. The text is [data/help/help.md](data/help/help.md), which GitHub
   shows as it is; the build embeds it and every frontend lays it out natively.
 - **Controllers you choose.** Preferences sets each port to Auto (Stella's
@@ -51,17 +51,25 @@ family (`fujinet-go-adam-desktop`, `-apple2-`, `-coco-`, `-msx-`, `-intv-`,
   Keypad, applied live — a game booted through FujiNet survives the change.
   Three switches decide whether a gamepad's analog sticks may drive a
   joystick, a paddle, or a driving controller.
-- **A floating keypad window** for both keyboard controllers (`1 2 3 / 4 5 6
-  / 7 8 9 / * 0 #`), each over its port's fire buttons, with the console
-  switches (Select, Reset, Color/B&W, both difficulty switches, Reboot to
-  CONFIG) and Map mode for rebinding any control to a key or gamepad
-  button. The window is a fixed-size floating panel in every toolkit, so a
-  tiling compositor never stretches the keys. Buttons are *held*, not
-  pulsed: the machine samples them once a frame.
-- **Gamepads that come and go.** SDL3 hotplug: a pad plugged in while a game
-  runs is assigned to the next free port within a second and shown in
-  Preferences; unplugging releases it. Pads with no gamepad mapping fall
-  back to raw buttons and hats.
+- **A floating Controllers window** drawn like the real thing: the CX40
+  joystick (drag the stick), the CX30 paddles (drag or scroll the knobs), the
+  CX20 driving controller (turn the wheel) and the CX50 keypad (`1 2 3 / 4 5 6
+  / 7 8 9 / * 0 #`) on each port, following what is plugged in, over the
+  six-switch console (power, TV type, both difficulties, select and reset,
+  with their latched positions; Power is Reboot to CONFIG and Stop stops in
+  the debugger). Held controls light up in orange, whoever holds them, so it is
+  also a gamepad tester. Map, Clear, Defaults and Show bindings rebind any of
+  the 59 controls to a key or gamepad button. The window is a fixed-size
+  floating panel in every toolkit, so a tiling compositor never stretches it.
+  Buttons are *held*, not pulsed: the machine samples them once a frame.
+  `A2600_OPEN_CONTROLLERS=1` opens it at start (`A2600_OPEN_KEYPAD` still
+  works).
+- **Gamepads that come and go, by port.** SDL3 hotplug: a pad plugged in is
+  Automatic (the first free port), or Left or Right if you say so, in the
+  window or in Preferences ▸ Input; the choice is remembered by the pad's id
+  and name, unplugging releases what it held, and a message shows when a pad
+  comes or goes. Pads with no gamepad mapping fall back to raw buttons and
+  hats.
 - **Open Cartridge…** runs a local `.a26`/`.bin`/`.rom`/`.fuji` directly
   (Stella autodetects the mapper); **Import Cartridge to SD…** copies one
   into FujiNet's SD root, where the CONFIG client lists it. Dropping a file
@@ -136,13 +144,13 @@ a network boot) disconnects the old cartridge before the new one dials.
 
 | | |
 |---|---|
-| Left joystick / fire | arrows / Space (Stella's defaults; every control is remappable in the keypad window) |
+| Left joystick / fire | arrows / Space (Stella's defaults; every control is remappable in the Controllers window) |
 | Right joystick / fire | Y G H J / F |
 | Left keypad | `1 2 3 / Q W E / A S D / Z X C` — right: `8 9 0 / I O P / K L ; / , . /` |
 | Paddles / driving | ← → (A, or the driving wheel) and ↑ ↓ (B) |
 | Select / Reset / Color·B&W | F1 / F2 / F3 — the difficulty switches are on the Machine menu |
 | Reboot to CONFIG | **Escape** (Ctrl+R on the menu) |
-| Keypads / Fullscreen / Debugger | F9 / F11 / F12 (debugger: F5 run/stop, F7 step, F8 trace, Shift+F8 frame) |
+| Controllers / Fullscreen / Debugger | F9 / F11 / F12 (debugger: F5 run/stop, F7 step, F8 trace, Shift+F8 frame) |
 
 ## How this was verified
 
@@ -154,10 +162,10 @@ a network boot) disconnects the old cartridge before the new one dials.
   media routing, gamepads (pure functions plus an SDL start/stop with no
   hardware), the debugger contract, and the FujiNet link (`fujibus_smoke`).
 - **Live desktops** — the GNOME and KDE frontends were run on a Wayland
-  desktop with "FujiNet connected" in the header, the keypad floating and
+  desktop with "FujiNet connected" in the header, the Controllers window floating and
   the debugger stopping and resuming the machine.
 - **Windows** — cross-built with mingw-w64 and run under Wine with the
-  keypad and debugger open; the core tests pass under Wine. That run found
+  Controllers window and debugger open; the core tests pass under Wine. That run found
   two real Windows bugs in Stella's fork (an MSVC-only stream constructor
   in `FSNodeWINDOWS.hxx`, and a connect wait that never noticed a refused
   connection on Winsock), both fixed as overrides in `core/stella/host/`.

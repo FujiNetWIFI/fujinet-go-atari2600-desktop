@@ -15,9 +15,11 @@
       The emulator is Stella, with the FujiNet cartridge running the real
       cartridge firmware's own protocol sources, so it behaves exactly as the
       hardware does. Joysticks, paddles, driving controllers and keypads can
-      be chosen per port, gamepads are picked up as they are plugged in, and
-      Stella's complete debugger is available in a native window, and a
-      built-in, searchable Help covers all of it.
+      be chosen per port and are drawn like the real Atari controllers and
+      console in a Controllers window, gamepads are picked up as they are
+      plugged in and can be assigned to a port, and Stella's complete
+      debugger is available in a native window, and a built-in, searchable
+      Help covers all of it.
     </p>
     <p>
       Nothing copyrighted is included: the Atari 2600 has no system ROM, and

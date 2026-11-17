@@ -26,7 +26,7 @@ static const char *const platform_names[] = { "GNOME", "KDE", "Windows", "macOS"
 
 /* What the frontends' Help buttons and menus open. */
 static const char *const contexts[] = {
-    "main", "import-sd", "keypad", "fujilog", "prefs/Machine",
+    "main", "import-sd", "controllers", "fujilog", "prefs/Machine", "prefs/Input",
     "debugger/console", "debugger/disassembly", "debugger/basic", "debugger/memory", "debugger/breakpoints",
     "debugger/watches", "debugger/cart", "debugger/trace", "debugger/history",
     "debugger/video", "debugger/sound", "debugger/symbols", "debugger/fujinet",
@@ -38,10 +38,13 @@ static const char *const debug_commands[] = { "help", "cart", "video", "watch", 
 /* The Preferences pages: what each one has, as the frontends label it. */
 static const struct {
     const char *context;
-    const char *labels[10];
+    const char *labels[16];
 } pages[] = {
     { "preferences", { "TV format", "Left port", "Right port", "Joystick", "Paddles", "Driving controller",
-                       "Gamepads", "Volume", NULL } },
+                       "Analog sticks drive", "Enable gamepads", "Gamepads", "Open Controllers",
+                       "Reset Controls", "Volume", NULL } },
+    { "prefs/Input", { "Left port", "Right port", "Analog sticks drive", "Enable gamepads", "Gamepads",
+                       "Open Controllers", "Reset Controls", NULL } },
     { "preferences", { "Enable FujiNet", "Use external FujiNet", "Address", "Audio", NULL } },
 };
 
@@ -49,7 +52,7 @@ static const struct {
 static const char *const settings_keys[] = {
     "tv_format", "port0_type", "port1_type", "analog_joystick", "analog_paddle", "analog_driving", "volume",
     "enable_fujinet", "fujinet_external", "fujinet_external_addr", "enable_audio", "enable_gamepad",
-    "tv_aspect", "smooth", "cart", "bindings",
+    "tv_aspect", "smooth", "cart", "bindings", "pad_assign", "controllers_show_bindings",
 };
 
 /* The app's shortcuts, as a PC and as a Mac shows them. */
@@ -191,6 +194,30 @@ check_controls(a2600session *s, int p)
         require(p, "default-keys", "shortcut", platforms[p] == A2600HELP_MACOS ? shortcuts[k].mac : shortcuts[k].pc);
 }
 
+/* The Controllers window: what it draws and does, and the count of controls. */
+static void
+check_controllers(int p)
+{
+    char buf[64];
+    static const char *const parts[] = {
+        "Joystick", "Paddles", "Driving", "Keypad", "Left port", "Right port",
+        "Power", "Stop", "Map", "Clear", "Defaults", "Show bindings", "A2600_OPEN_CONTROLLERS",
+    };
+
+    for (size_t k = 0; k < sizeof parts / sizeof *parts; k++)
+        require(p, "controllers", "part", parts[k]);
+    for (size_t k = 0; k < sizeof parts / sizeof *parts; k++)
+        if (!strcmp(parts[k], "Clear") || !strcmp(parts[k], "Defaults") || !strcmp(parts[k], "Show bindings")
+            || !strcmp(parts[k], "Map"))
+            require(p, "changing-the-controls", "button", parts[k]);
+    snprintf(buf, sizeof buf, "%d controls in all", A2600_TARGET_COUNT);
+    require(p, "changing-the-controls", "count", buf);
+    require(p, "changing-the-controls", "reserved", "F9");
+    require(p, "changing-the-controls", "reserved", "F12");
+    require(p, "gamepads", "assignment", "Automatic");
+    require(p, "gamepads", "remembered", "pad_assign");
+}
+
 /* The two ports, in the FujiNet topic. */
 static void
 check_ports(int p)
@@ -278,6 +305,7 @@ main(void)
     for (int p = 0; p < 4; p++) {
         check_prefs(s, p);
         check_controls(s, p);
+        check_controllers(p);
         check_ports(p);
         check_debugger(p);
     }

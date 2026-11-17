@@ -18,7 +18,7 @@ can boot games from the network.
 3. **Or open a cartridge of your own.** **Open Cartridge…**
    (<kbd>Ctrl+O</kbd>) takes an `.a26`, `.bin`, `.rom` or `.fuji` image. See
    [Cartridges](#cartridges).
-4. **Play.** The keys, the gamepads and the Keypads window
+4. **Play.** The keys, the gamepads and the Controllers window
    (<kbd>F9</kbd>) work the two ports and the console's switches. See
    [Controllers and keys](#controllers-and-keys).
 5. **Change the console.** [Preferences](#preferences) picks the TV format,
@@ -28,7 +28,7 @@ can boot games from the network.
 
 The list on the left has a topic for each part of the app; the search box
 above it finds every section that has all the words you type. A **Help**
-button in Preferences, the Debugger, the Keypads window and the FujiNet
+button in Preferences, the Debugger, the Controllers window and the FujiNet
 console log opens the topic for what it shows, and
 <kbd>Ctrl+Shift+H</kbd> does the same for the window you are in.
 
@@ -57,7 +57,7 @@ The console's picture fills the window. The menus have:
   **Reboot to CONFIG**: see [Cartridges](#cartridges).
 - **Select**, **Reset**, **Color** (Color / B&W) and the two difficulty
   switches: the console's switches.
-- **Keypads** (<kbd>F9</kbd>) and **Debugger** (<kbd>F12</kbd>).
+- **Controllers** (<kbd>F9</kbd>) and **Debugger** (<kbd>F12</kbd>).
 - **TV Aspect**, **Smooth Scaling** and **Fullscreen** (<kbd>F11</kbd>).
 - **FujiNet Configuration** (the web UI) and **Console Log**.
 - **Preferences** (<kbd>Ctrl+,</kbd>), **Help**, **About** and **Quit**.
@@ -119,7 +119,9 @@ stretched, and leaves them sharp when it is off.
 Each of the two ports holds a **joystick** (a stick and one fire button), a
 pair of **paddles**, a **driving controller** (a wheel and a button) or a
 **keypad** (the 12-key controller of Star Raiders and BASIC Programming).
-Preferences ▸ Machine ▸ Controllers picks what is plugged in.
+Preferences ▸ Input (the **Input** group of Settings on Windows) picks what is
+plugged in, and so do the **Left port** and **Right port** boxes in the
+[Controllers window](#controllers-window).
 
 ## Default keys
 
@@ -157,7 +159,7 @@ The app keeps these keys for itself:
 | <kbd>Ctrl+R</kbd> | Reboot to CONFIG |
 | <kbd>Ctrl+,</kbd> | Preferences |
 | <kbd>Ctrl+Shift+H</kbd> | Help |
-| <kbd>F9</kbd> | Keypads |
+| <kbd>F9</kbd> | Controllers |
 | <kbd>F11</kbd> | Fullscreen |
 | <kbd>F12</kbd> | Debugger |
 
@@ -182,41 +184,89 @@ Key combinations with the Super (Windows) key are the desktop's.
 ## Gamepads
 
 Gamepads are picked up as they are plugged in, and can come and go at any
-time. A pad plugged in while a game runs is assigned to the next free port
-within a second, and shown in Preferences; unplugging releases it, and a pad
-that comes back gets its port back. A pad with no standard layout (a plain USB
-adapter) uses its raw buttons and hats. The D-pad moves a joystick; whether
-the analog sticks may drive a joystick, a paddle or a driving controller is
-decided by three switches in Preferences ▸ Machine ▸ Analog sticks drive.
+time; a message shows when one comes or goes. A gamepad with no standard
+layout (a plain USB adapter) works too, through its raw buttons and hats.
+
+Each pad drives one port. **Automatic** gives the first pad the left port and
+the next the right port; choose **Left** or **Right** to fix it, in the
+Controllers window or in Preferences ▸ Input. A choice is remembered between
+runs (setting `pad_assign`), by the pad's id and name, so a pad that is
+unplugged and plugged in again gets its port back. Unplugging a pad lets go of
+everything it held and centres a paddle or wheel it had turned.
+
+The D-pad and the buttons work whatever is plugged in. Whether the analog
+sticks may drive a joystick, a paddle or a driving controller is decided by
+three switches in Preferences ▸ Input ▸ Analog sticks drive.
 
 ## Changing the controls
 
-The controls are changed in the Keypads window (<kbd>F9</kbd>): click **Map**,
-then click a control, then press the key or the gamepad button to give it. The
-control's old key or button is taken from it. **Defaults** puts every control
-back. The map is kept in the settings, and only what differs from the defaults
-is written.
+The controls are changed in the Controllers window (<kbd>F9</kbd>): click
+**Map**, then click a control in the picture, then press the key or the
+gamepad button to give it. There are 59 controls in all: both ports' joystick,
+paddles, driving controller and keypad, the console's five switches and Reboot
+to CONFIG and Stop in the Debugger. The picture shows only what is plugged in,
+so the **list** next to the buttons names every one of them: pick a control of
+a controller that is not plugged in (the keypad's keys while a joystick is
+there) from it. A paddle's knob and the driving wheel are turned by the
+analog stick; their turn arrows are what Map gives keys to.
 
-<!-- context: keypad -->
-# Keypads window
+- **Clear** takes the picked control's key and gamepad button away.
+- **Defaults** puts every control back.
+- **Show bindings** writes the key bound to each control on it.
+- <kbd>Escape</kbd> backs out of a pick; <kbd>F9</kbd>, <kbd>F11</kbd>,
+  <kbd>F12</kbd> and keys with <kbd>Ctrl</kbd> cannot be given to a control.
 
-The Keypads window (<kbd>F9</kbd>) shows both keyboard controllers side by
-side, each 1 2 3 / 4 5 6 / 7 8 9 / `*` 0 #, with a row of fire buttons for the
-joystick underneath and the console's switches (Select, Reset, Color / B&W,
-both difficulty switches, Reboot to CONFIG). It floats on its own at a fixed
-size. The controls that are held light up in the accent colour, whoever holds
-them: the keyboard, a gamepad or the mouse.
+A key does one thing, so a key given to a new control is taken from the old
+one, and the window says so. The map is kept in the settings, and only what
+differs from the defaults is written.
+
+<!-- context: controllers -->
+# Controllers window
+
+The Controllers window (<kbd>F9</kbd>) draws what is plugged into each port,
+and the console's switches, like the real thing. It floats on its own at a
+fixed size, hidden until you ask for it. Each port shows its controller:
+
+| Controller | Drawn as |
+|---|---|
+| Joystick | The CX40: a stick in a ring, and the red fire button |
+| Paddles | The CX30 pair: a knob and a red button each |
+| Driving | The CX20: an endless wheel and the red button |
+| Keypad | The CX50: twelve round keys, 1 2 3 / 4 5 6 / 7 8 9 / `*` 0 # |
+
+The **Left port** and **Right port** boxes under the picture change what is
+plugged in, as Preferences does; *Auto* follows the cartridge.
+
+The console is below, with its six switches: power, TV type (color or b-w),
+the two difficulty switches (A or B), game select and game reset. TV type and
+the difficulties show where they are set; select and reset light while held.
+**Power** is the power cycle (Reboot to CONFIG), and **Stop** on the wood strip
+stops the console in the Debugger.
+
+The controls that are held light up in orange, whoever holds them: the
+keyboard, a gamepad or the mouse, so the window shows a gamepad working too.
 
 | With the mouse | Does |
 |---|---|
-| Press a key or a button | Holds it for as long as the button is down |
-| Press a switch | Presses it |
+| Press a button or a key | Holds it for as long as the button is down |
+| Drag the joystick's ring | Tilts the stick towards the pointer; let go and it centres |
+| Drag a paddle's knob | Turns it; it stays where you leave it |
+| Scroll over a knob | Nudges the paddle |
+| Drag round the driving wheel | Turns it, a notch for each step of the drag |
+| Scroll over the wheel | Turns it a notch |
+| Click a switch | Flips it, or presses select and reset |
 
 The machine samples its controls once a frame, so a button is *held*, not
 pulsed, as the plastic one is. Switching to another window lets go of
-everything the mouse holds. Keys typed in the Keypads window go to the
-console. **Map** and **Defaults** change the controls (see
-[Changing the controls](#changing-the-controls)).
+everything the mouse and the keyboard hold, but not a gamepad. Keys typed in
+the Controllers window go to the console.
+
+Under the picture are a row for each gamepad plugged in (*Automatic*, *Left*
+or *Right*, see [Gamepads](#gamepads)) and the **Map**, **Clear**,
+**Defaults** and **Show bindings** buttons with the list of all the controls
+(see [Changing the controls](#changing-the-controls)). A **Help** button opens
+this topic. The window can also be opened at start with the environment
+variable `A2600_OPEN_CONTROLLERS` set (`A2600_OPEN_KEYPAD` still works).
 
 # The machine
 
@@ -311,11 +361,12 @@ the traffic.
 
 # Preferences
 
-Preferences (<kbd>Ctrl+,</kbd>) set up the console. It is one page of groups.
-The controllers apply at once, even to a game booted over FujiNet; the TV
-format and the Host settings apply by restarting the session when Preferences
-closes. The settings are one file, shared by the GNOME and KDE apps on the
-computer.
+Preferences (<kbd>Ctrl+,</kbd>) set up the console. On GNOME it has a
+Machine page and an Input page, in KDE and on a Mac a Machine tab and an Input
+tab. The controllers apply at once, even to a game booted over FujiNet; the TV
+format, the Host settings and Enable gamepads apply by restarting the session
+when Preferences closes. The settings are one file, shared by the GNOME and KDE
+apps on the computer.
 
 <!-- only: macos -->
 
@@ -325,7 +376,9 @@ On a Mac this window is called **Settings** (in the app menu).
 
 <!-- only: windows -->
 
-On Windows this window is called **Settings** (in the Machine menu).
+On Windows this window is called **Settings** (in the Machine menu), and is one
+window: the Input settings are its **Input** group, and its Help button opens
+the Machine settings topic.
 
 <!-- end -->
 
@@ -335,29 +388,33 @@ On Windows this window is called **Settings** (in the Machine menu).
 - **TV format**: *Auto*, *NTSC*, *PAL*, *PAL60* or *SECAM* (setting
   `tv_format`).
 
-## Controller settings
+<!-- context: prefs/Input -->
+## Input settings
+
+On GNOME this is the Input page, in KDE and on a Mac the Input tab, and on
+Windows the **Input** group of Settings.
 
 - **Left port** and **Right port**: what is plugged into each port: *Auto*
   (Stella's ROM database and controller detector), *Joystick*, *Paddles*,
   *Driving* or *Keypad* (settings `port0_type` and `port1_type`).
-
-## Analog stick settings
-
-Whether a gamepad's sticks move these controllers, or only its D-pad does:
-
-- **Joystick**: the left stick as the four directions (setting
-  `analog_joystick`).
-- **Paddles**: the left stick's X is paddle A, the right stick's X is paddle B
-  (setting `analog_paddle`).
-- **Driving controller**: the left stick's X is the wheel (setting
-  `analog_driving`).
-
-## Gamepad settings
-
-**Gamepads** lists each one plugged in, and which port it drives. A new
-gamepad drives the first free port; choose *Left*, *Right* or *Automatic* to
-fix it. The keys and buttons are changed in the Keypads window (see
-[Changing the controls](#changing-the-controls)).
+- **Analog sticks drive**: whether a gamepad's sticks move these controllers,
+  or only its D-pad does:
+  - **Joystick**: the left stick as the four directions (setting
+    `analog_joystick`).
+  - **Paddles**: the left stick's X is paddle A, the right stick's X is paddle
+    B (setting `analog_paddle`).
+  - **Driving controller**: the left stick's X is the wheel (setting
+    `analog_driving`).
+- **Enable gamepads**: poll USB and Bluetooth gamepads. Applied when
+  Preferences closes (setting `enable_gamepad`).
+- **Gamepads**: each one plugged in, and which port it drives: *Automatic*,
+  *Left* or *Right*. A change applies at once and is remembered (setting
+  `pad_assign`; see [Gamepads](#gamepads)).
+- **Open Controllers** opens the [Controllers window](#controllers-window), where
+  the keys and buttons are changed.
+- **Reset Controls** puts every key and gamepad button back to its default. In
+  KDE (after asking) and on Windows it also lets every gamepad pick its port
+  again.
 
 ## Audio settings
 
@@ -372,14 +429,15 @@ fix it. The keys and buttons are changed in the Keypads window (see
   [An external FujiNet](#an-external-fujinet); setting
   `fujinet_external_addr`).
 - **Audio**: open the system audio device (setting `enable_audio`).
-- **Gamepads**: poll USB and Bluetooth gamepads (setting `enable_gamepad`).
 
 ## The settings file
 
 The settings file is `settings.ini` (see [Files and folders](#files-and-folders)).
 Each setting above names its key. The others are `tv_aspect` and `smooth` (the
-View menu's picture options), `cart` (the opened cartridge, empty for CONFIG)
-and `bindings` (the controls that differ from the defaults).
+View menu's picture options), `cart` (the opened cartridge, empty for CONFIG),
+`bindings` (the controls that differ from the defaults), `pad_assign` (the
+gamepads kept on a port) and `controllers_show_bindings` (the Controllers
+window's Show bindings).
 
 # Debugger
 
@@ -616,7 +674,7 @@ In the data folder:
   [Gamepads](#gamepads)), the controller may be of another kind, or its
   buttons may be given other jobs.
 - **A game does not respond to the joystick**: set the port's type in
-  Preferences ▸ Machine, or leave it on *Auto*.
+  Preferences ▸ Input or the Controllers window, or leave it on *Auto*.
 - **No sound**: the audio device could not be opened, or the volume is 0.
 - **A port is taken**: another program is using 11504 or 11505. Close the
   other FujiNet, or point the app at it with **Use external FujiNet**.
