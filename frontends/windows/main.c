@@ -31,7 +31,7 @@
 #include "a2600session.h"
 #include "debugger/dbg_window.h"
 #include "display.h"
-#include "keypad/keypad_window.h"
+#include "controllers/controllers_window.h"
 #include "key_forward.h"
 #include "resource.h"
 
@@ -44,6 +44,9 @@ static HWND g_display;
 static int g_tv_aspect = 1, g_smooth = 0, g_fullscreen = 0;
 static WINDOWPLACEMENT g_placement;
 static int g_sysact_down[A2600_SYSACT_COUNT];
+static unsigned g_pad_gen;              /* the gamepad generation last toasted */
+static char g_toast[160];               /* the last pad hot-plug line, shown in the title bar for a few seconds */
+static ULONGLONG g_toast_until;
 
 /* ---- helpers -------------------------------------------------------------- */
 
@@ -70,12 +73,24 @@ static void run_sysaction(int sa)
     }
 }
 
+/* A gamepad plugged in or out: the line goes in the title bar for 4 s. */
+static void show_toast(const char *text);
+
 static const char *base_name(const char *p)
 {
     const char *s = strrchr(p, '\\');
     const char *t = strrchr(p, '/');
     if (t && (!s || t > s)) s = t;
     return s ? s + 1 : p;
+}
+
+static void update_title(void);
+
+static void show_toast(const char *text)
+{
+    snprintf(g_toast, sizeof g_toast, "%s", text);
+    g_toast_until = GetTickCount64() + 4000;
+    update_title();
 }
 
 static void update_title(void)
@@ -93,6 +108,10 @@ static void update_title(void)
     else {
         a2600session_cart_status(g_session, st, sizeof st);
         snprintf(title, sizeof title, APP_TITLE " \xe2\x80\x94 FujiNet: %s", st);
+    }
+    if (g_toast[0] && GetTickCount64() < g_toast_until) {
+        const size_t used = strlen(title);
+        snprintf(title + used, sizeof title - used, " \xe2\x80\x94 %s", g_toast);
     }
     {
         /* UTF-8 -> UTF-16 for the em dash. */
@@ -127,7 +146,7 @@ static void build_menu(HWND hwnd)
     AppendMenuA(machine, MF_SEPARATOR, 0, NULL);
     AppendMenuA(machine, MF_STRING, IDM_EXIT, "E&xit");
 
-    AppendMenuA(view, MF_STRING, IDM_KEYPAD, "&Keypads\tF9");
+    AppendMenuA(view, MF_STRING, IDM_CONTROLLERS, "&Controllers\tF9");
     AppendMenuA(view, MF_STRING, IDM_DEBUGGER, "&Debugger\tF12");
     AppendMenuA(view, MF_SEPARATOR, 0, NULL);
     AppendMenuA(view, MF_STRING | MF_CHECKED, IDM_TV_ASPECT, "&TV Aspect (4:3)");
@@ -301,6 +320,17 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             return 0;
         case IDC_SET_AUDIO: settings_apply_checkbox(hwnd, IDC_SET_AUDIO, "enable_audio", 1, 0); return 0;
         case IDC_SET_GAMEPAD: settings_apply_checkbox(hwnd, IDC_SET_GAMEPAD, "enable_gamepad", 1, 0); return 0;
+        case IDC_SET_RESET_CTRL: {
+            /* every key and gamepad button back to its default, every gamepad back to Automatic */
+            const int count = a2600session_gamepad_count(g_session);
+            int idx;
+            a2600session_bindings_reset(g_session);
+            for (idx = 0; idx < count; idx++) a2600session_gamepad_assign(g_session, idx, -1);
+            refresh_pad_list();
+            a2600_controllers_window_refresh();
+            return 0;
+        }
+        case IDC_SET_OPEN_CTRL: a2600_controllers_window_show(g_hwnd, g_session); return 0;
         default: break;
         }
         break;
@@ -406,7 +436,7 @@ static void show_settings(HINSTANCE inst)
     }
     g_settings_window = CreateWindowA("A2600SettingsWindow", "Settings",
         WS_OVERLAPPEDWINDOW & ~(WS_MAXIMIZEBOX | WS_THICKFRAME),
-        CW_USEDEFAULT, CW_USEDEFAULT, 460, 700, NULL, NULL, inst, NULL);
+        CW_USEDEFAULT, CW_USEDEFAULT, 460, 680, NULL, NULL, inst, NULL);
 
     settings_label(g_settings_window, inst, "Machine (applied by restarting the session)", 16, y, 420, 18, 0); y += 22;
     settings_label(g_settings_window, inst, "TV format:", 16, y + 3, 90, 18, 0);
@@ -414,7 +444,7 @@ static void show_settings(HINSTANCE inst)
                    a2600session_get_int(g_session, "tv_format", A2600_TV_AUTO));
     y += 36;
 
-    settings_label(g_settings_window, inst, "Controllers (applied immediately)", 16, y, 420, 18, 0); y += 22;
+    settings_label(g_settings_window, inst, "Input: controllers (applied immediately)", 16, y, 420, 18, 0); y += 22;
     settings_label(g_settings_window, inst, "Left port:", 16, y + 3, 90, 18, 0);
     settings_combo(g_settings_window, inst, IDC_SET_PORT0, 110, y, 200, a2600_ctrl_type_name,
                    a2600session_port_type(g_session, 0));
@@ -451,6 +481,18 @@ static void show_settings(HINSTANCE inst)
     g_pad_generation = a2600session_gamepad_generation(g_session);
     refresh_pad_list();
     y += 80;
+    settings_checkbox(g_settings_window, inst, "Enable gamepads (applied by restarting the session)", IDC_SET_GAMEPAD, 16, y, 420,
+                      a2600session_get_int(g_session, "enable_gamepad", 1));
+    y += 28;
+    {
+        HWND rb = CreateWindowExA(0, "BUTTON", "Reset Controls", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 16, y, 130, 26,
+                                  g_settings_window, (HMENU)(INT_PTR)IDC_SET_RESET_CTRL, inst, NULL);
+        HWND ob = CreateWindowExA(0, "BUTTON", "Open Controllers", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 156, y, 140, 26,
+                                  g_settings_window, (HMENU)(INT_PTR)IDC_SET_OPEN_CTRL, inst, NULL);
+        SendMessageA(rb, WM_SETFONT, (WPARAM)font, TRUE);
+        SendMessageA(ob, WM_SETFONT, (WPARAM)font, TRUE);
+    }
+    y += 38;
 
     settings_label(g_settings_window, inst, "Volume:", 16, y + 3, 90, 18, 0);
     h = CreateWindowExA(0, TRACKBAR_CLASSA, "", WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS,
@@ -479,9 +521,7 @@ static void show_settings(HINSTANCE inst)
     y += 30;
     settings_checkbox(g_settings_window, inst, "Audio", IDC_SET_AUDIO, 16, y, 200,
                       a2600session_get_int(g_session, "enable_audio", 1)); y += 26;
-    settings_checkbox(g_settings_window, inst, "Gamepads", IDC_SET_GAMEPAD, 16, y, 200,
-                      a2600session_get_int(g_session, "enable_gamepad", 1));
-    y += 36;
+    y += 10;
     {
         HWND hb = CreateWindowExA(0, "BUTTON", "Help", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 16, y, 80, 26,
                                   g_settings_window, (HMENU)(INT_PTR)IDC_SET_HELP, inst, NULL);
@@ -646,7 +686,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_KEYDOWN: case WM_SYSKEYDOWN: {
         uint32_t ks;
         int sa;
-        if (wp == VK_F9) { a2600_keypad_window_toggle(hwnd, g_session); return 0; }
+        if (wp == VK_F9) { a2600_controllers_window_toggle(hwnd, g_session); return 0; }
         if (wp == VK_F12) { a2600_debugger_show(hwnd, g_session); return 0; }
         if (wp == VK_F11) { toggle_fullscreen(hwnd); return 0; }
         if (msg == WM_SYSKEYDOWN) {
@@ -690,7 +730,15 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (wp == IDT_STATUS) update_title();
         else if (wp == IDT_SYSACT) {
             int sa;
+            unsigned gen;
             while (a2600session_sysaction_take(g_session, &sa)) run_sysaction(sa);
+            gen = a2600session_gamepad_generation(g_session);
+            if (gen != g_pad_gen) {
+                char text[128];
+                g_pad_gen = gen;
+                if (a2600session_gamepad_last_event(g_session, text, sizeof text) > 0) show_toast(text);
+                a2600_controllers_window_refresh();
+            }
         }
         return 0;
 
@@ -719,7 +767,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case IDM_COLOR: toggle_switch_item(hwnd, IDM_COLOR, A2600_SW_COLOR_BW); return 0;
         case IDM_LEFT_DIFF: toggle_switch_item(hwnd, IDM_LEFT_DIFF, A2600_SW_LEFT_DIFF); return 0;
         case IDM_RIGHT_DIFF: toggle_switch_item(hwnd, IDM_RIGHT_DIFF, A2600_SW_RIGHT_DIFF); return 0;
-        case IDM_KEYPAD: a2600_keypad_window_toggle(hwnd, g_session); return 0;
+        case IDM_CONTROLLERS: a2600_controllers_window_toggle(hwnd, g_session); return 0;
         case IDM_DEBUGGER: a2600_debugger_show(hwnd, g_session); return 0;
         case IDM_FULLSCREEN: toggle_fullscreen(hwnd); return 0;
         case IDM_TV_ASPECT: {
@@ -840,13 +888,15 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     if (a2600session_start(g_session, &opts) != 0)
         MessageBoxA(g_hwnd, a2600session_last_error(g_session), APP_TITLE, MB_ICONWARNING | MB_OK);
 
+    g_pad_gen = a2600session_gamepad_generation(g_session);
     SetTimer(g_hwnd, IDT_STATUS, 1000, NULL);
-    SetTimer(g_hwnd, IDT_SYSACT, 100, NULL);
+    SetTimer(g_hwnd, IDT_SYSACT, 50, NULL);
     update_title();
 
     {
-        const char *env = getenv("A2600_OPEN_KEYPAD");
-        if (env && *env && *env != '0') a2600_keypad_window_toggle(g_hwnd, g_session);
+        const char *env = getenv("A2600_OPEN_CONTROLLERS");
+        if (!env || !*env) env = getenv("A2600_OPEN_KEYPAD");     /* the old name */
+        if (env && *env && *env != '0') a2600_controllers_window_show(g_hwnd, g_session);
         env = getenv("A2600_OPEN_DEBUGGER");
         if (env && *env && *env != '0') a2600_debugger_show(g_hwnd, g_session);
         env = getenv("A2600_OPEN_SETTINGS");
@@ -857,7 +907,6 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
         /* Before TranslateMessage, so the sub-windows' keys reach them
          * regardless of which child control has the focus. */
         if (a2600_debugger_pretranslate(&msg)) continue;
-        if (a2600_keypad_pretranslate(&msg)) continue;
         if (a2600_help_pretranslate(&msg)) continue;
         TranslateMessage(&msg);
         DispatchMessage(&msg);

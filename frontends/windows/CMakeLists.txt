@@ -21,7 +21,7 @@ add_executable(fujinet-go-atari2600-windows WIN32
   main.c
   help/help_window.c
   display.c
-  keypad/keypad_window.c
+  controllers/controllers_window.c
   debugger/dbg_window.c
   debugger/dbg_video.c
   resource.rc

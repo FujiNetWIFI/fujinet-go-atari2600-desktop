@@ -15,7 +15,7 @@
 #define IDM_RIGHT_DIFF     1009
 #define IDM_SETTINGS       1030
 #define IDM_EXIT           1031
-#define IDM_KEYPAD         1010
+#define IDM_CONTROLLERS    1010
 #define IDM_DEBUGGER       1013
 #define IDM_TV_ASPECT      1011
 #define IDM_SMOOTH         1012
@@ -42,6 +42,11 @@
 #define IDC_SET_PORT1_NOTE 2014
 #define IDC_SET_EXTERNAL   2015
 #define IDC_SET_EXT_ADDR   2016
+#define IDC_SET_RESET_CTRL 2017
+#define IDC_SET_OPEN_CTRL  2018
+
+/* The Controllers window's target list. */
+#define IDC_CTRL_TARGETS   3001
 
 #define IDC_LOG_EDIT       2100
 #define IDC_LOG_HELP       2101
