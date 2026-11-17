@@ -15,5 +15,13 @@
 #include <QKeyEvent>
 #include <cstdint>
 
+#include "a2600session.h"
+
 /* Returns the keysym, or 0 when the key has no equivalent worth forwarding. */
 uint32_t a2600KeysymFromQt(const QKeyEvent *e);
+
+/* Presses or releases the session's control for a key event, as the main window
+ * does; a key bound to a console action posts it to the session's queue, which
+ * the main window's timer runs. Auto-repeat is ignored. True when the session
+ * took the key. */
+bool a2600ForwardKey(a2600session *session, const QKeyEvent *e, bool down);

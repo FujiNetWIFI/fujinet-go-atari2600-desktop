@@ -26,9 +26,9 @@
 #include "FujiNetWindows.h"
 #include "KeyForward.h"
 #include "SettingsDialog.h"
+#include "controllers/ControllersWindow.h"
 #include "debugger/DebuggerWindow.h"
 #include "help/HelpWindow.h"
-#include "keypad/KeypadWindow.h"
 
 static const char *const kCartFilter =
     "Atari 2600 cartridges (*.a26 *.bin *.rom *.fuji);;All files (*)";
@@ -62,14 +62,22 @@ MainWindow::MainWindow(a2600session *session, QWidget *parent)
     m_statusTimer.start(1000);
     updateStatus();
     /* The gamepad thread cannot call into Qt; it posts system actions and
-     * this timer takes them. */
+     * hot-plug events, and this timer takes them. The baseline keeps pads
+     * already attached from announcing themselves. */
+    m_padGen = a2600session_gamepad_generation(session);
     connect(&m_sysactTimer, &QTimer::timeout, this, &MainWindow::drainSysactions);
-    m_sysactTimer.start(100);
+    m_sysactTimer.start(50);
 
-    if (qEnvironmentVariableIsSet("A2600_OPEN_KEYPAD"))
-        toggleKeypad();
+    /* Developer affordances: open the Controllers window, the debugger or the
+     * settings alongside the main window. A2600_OPEN_KEYPAD is the old name. */
+    if (qEnvironmentVariableIsSet("A2600_OPEN_CONTROLLERS") || qEnvironmentVariableIsSet("A2600_OPEN_KEYPAD"))
+        QTimer::singleShot(0, this, [this] { toggleControllers(); });
     if (qEnvironmentVariableIsSet("A2600_OPEN_DEBUGGER"))
         DebuggerWindow::showFor(this, session);
+    if (qEnvironmentVariableIsSet("A2600_OPEN_PREFS"))
+        QTimer::singleShot(0, this, [this] {
+            showSettings(QString::fromLocal8Bit(qgetenv("A2600_OPEN_PREFS")));
+        });
 }
 
 void MainWindow::buildMenus()
@@ -118,12 +126,12 @@ void MainWindow::buildMenus()
             [this](bool on) { a2600session_switch_set(m_session, A2600_SW_RIGHT_DIFF, on); });
     machine->addSeparator();
     machine->addAction(QStringLiteral("&Preferences..."), QKeySequence(Qt::CTRL | Qt::Key_Comma), this,
-                       &MainWindow::showSettings);
+                       [this] { showSettings(); });
     machine->addSeparator();
     machine->addAction(QStringLiteral("&Quit"), QKeySequence::Quit, this, [this] { close(); });
 
     QMenu *view = menuBar()->addMenu(QStringLiteral("&View"));
-    view->addAction(QStringLiteral("&Keypads"), QKeySequence(Qt::Key_F9), this, &MainWindow::toggleKeypad);
+    view->addAction(QStringLiteral("&Controllers"), QKeySequence(Qt::Key_F9), this, &MainWindow::toggleControllers);
     view->addAction(QStringLiteral("&Debugger"), QKeySequence(Qt::Key_F12), this,
                     [this] { DebuggerWindow::showFor(this, m_session); });
     view->addSeparator();
@@ -204,10 +212,18 @@ void MainWindow::useSoftwareDisplay()
     setCentralWidget(soft);   /* deletes the GPU display, which stops its feed */
 }
 
-void MainWindow::showSettings()
+/* A changed machine option restarts the session; the Input tab's changes apply at
+ * once, and Open Controllers closes the dialog (as OK) so the window it opens is not
+ * blocked by a modal one. */
+void MainWindow::showSettings(const QString &startTab)
 {
-    if (SettingsDialog::run(this, m_session))
+    bool openControllers = false;
+    const bool restart = SettingsDialog::run(this, m_session, &openControllers, startTab);
+    a2600ControllersRefresh();
+    if (restart)
         restartSession();
+    if (openControllers)
+        a2600ControllersShow(this, m_session);
 }
 
 void MainWindow::restartSession()
@@ -224,11 +240,11 @@ void MainWindow::restartSession()
     statusBar()->showMessage(QStringLiteral("Machine options applied (session restarted)"), 5000);
 }
 
-void MainWindow::toggleKeypad()
+void MainWindow::toggleControllers()
 {
-    if (!m_keypad) m_keypad = new KeypadWindow(m_session, this);
-    if (m_keypad->isVisible()) m_keypad->hide();
-    else m_keypad->show();
+    /* Hidden, not destroyed: a remap in progress and the window's position both
+     * survive closing it. */
+    a2600ControllersToggle(this, m_session);
 }
 
 void MainWindow::runSysaction(int sa)
@@ -246,10 +262,20 @@ void MainWindow::runSysaction(int sa)
     }
 }
 
+/* The news the other threads leave: console actions from a pad, a key or the
+ * Controllers window, and gamepad hot-plugs (shown in the status bar). */
 void MainWindow::drainSysactions()
 {
     int sa;
     while (a2600session_sysaction_take(m_session, &sa)) runSysaction(sa);
+
+    const unsigned gen = a2600session_gamepad_generation(m_session);
+    if (gen != m_padGen) {
+        m_padGen = gen;
+        char msg[160];
+        if (a2600session_gamepad_last_event(m_session, msg, sizeof msg) > 0)
+            statusBar()->showMessage(QString::fromUtf8(msg), 4000);
+    }
 }
 
 void MainWindow::updateStatus()
@@ -303,7 +329,7 @@ void MainWindow::loadMedia(const QString &path)
 void MainWindow::keyPressEvent(QKeyEvent *e)
 {
     if (e->isAutoRepeat()) return;
-    if (e->key() == Qt::Key_F9) { toggleKeypad(); return; }
+    if (e->key() == Qt::Key_F9) { toggleControllers(); return; }
     if (e->key() == Qt::Key_F12) { DebuggerWindow::showFor(this, m_session); return; }
     if (e->modifiers() & (Qt::ControlModifier | Qt::AltModifier)) { QMainWindow::keyPressEvent(e); return; }
 
@@ -330,7 +356,8 @@ void MainWindow::keyReleaseEvent(QKeyEvent *e)
 
 bool MainWindow::event(QEvent *e)
 {
-    if (e->type() == QEvent::WindowDeactivate) {
+    /* focus moving to the Controllers window keeps the keys down: it forwards its own */
+    if (e->type() == QEvent::WindowDeactivate && !a2600ControllersActive()) {
         a2600session_release_all(m_session);
         for (bool &d : m_sysactDown) d = false;
     }

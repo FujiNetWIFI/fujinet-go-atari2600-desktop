@@ -8,6 +8,7 @@
 #include <QApplication>
 #include <QIcon>
 
+#include "Accent.h"
 #include "MainWindow.h"
 #include "a2600session.h"
 
@@ -35,17 +36,34 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    MainWindow win(session);
+    /* Toggled-on push buttons (Map while armed) wear the accent colour with dark
+     * text, light or dark. The rule spells out the whole box: with only a
+     * background colour the style still draws its own bevel, which darkens it
+     * (Breeze), lightens it (Fusion) or ignores it (Kvantum). */
+    const QColor accent = a2600CtlAccent();
+    app.setStyleSheet(
+        QStringLiteral(
+            "QPushButton[accent=\"true\"] { background-color: %1; color: %4;"
+            " border: 1px solid %3; border-radius: 4px; padding: 4px 12px; }"
+            "QPushButton[accent=\"true\"]:hover { background-color: %2; }")
+            .arg(accent.name(), accent.lighter(112).name(), accent.darker(140).name(), a2600CtlAccentInk().name()));
 
-    a2600session_start_opts opts;
-    a2600session_default_opts(session, &opts);
-    if (argc > 1) opts.cart_path = argv[1];
+    int rc;
+    {
+        /* The windows go before the session does: the Controllers window still
+         * calls into it as it is hidden. */
+        MainWindow win(session);
 
-    if (a2600session_start(session, &opts) != 0)
-        qWarning("%s", a2600session_last_error(session));
-    win.show();
+        a2600session_start_opts opts;
+        a2600session_default_opts(session, &opts);
+        if (argc > 1) opts.cart_path = argv[1];
 
-    const int rc = app.exec();
+        if (a2600session_start(session, &opts) != 0)
+            qWarning("%s", a2600session_last_error(session));
+        win.show();
+
+        rc = app.exec();
+    }
     a2600session_stop(session);
     a2600session_free(session);
     return rc;

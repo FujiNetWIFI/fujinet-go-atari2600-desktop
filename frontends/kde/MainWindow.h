@@ -11,7 +11,6 @@
 #include "a2600session.h"
 
 class DisplayView;
-class KeypadWindow;
 class QAction;
 
 class MainWindow : public QMainWindow {
@@ -34,19 +33,19 @@ private:
     void runSysaction(int sa);
     void openCart(const QString &path);
     void loadMedia(const QString &path);
-    void toggleKeypad();
+    void toggleControllers();
     void useSoftwareDisplay();
-    void showSettings();
+    void showSettings(const QString &startTab = QString());
     void restartSession();
     void showAbout();
 
     a2600session *m_session;
     DisplayView *m_display = nullptr;
-    KeypadWindow *m_keypad = nullptr;
     QLabel *m_status = nullptr;
     QLabel *m_dot = nullptr;
     QTimer m_statusTimer;
     QTimer m_sysactTimer;
+    unsigned m_padGen = 0;
     QAction *m_colorAction = nullptr;
     QAction *m_leftDiffAction = nullptr;
     QAction *m_rightDiffAction = nullptr;

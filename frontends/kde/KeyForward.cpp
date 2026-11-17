@@ -48,3 +48,15 @@ uint32_t a2600KeysymFromQt(const QKeyEvent *e)
         return (uint32_t)k;
     return 0;
 }
+
+bool a2600ForwardKey(a2600session *session, const QKeyEvent *e, bool down)
+{
+    if (e->isAutoRepeat()) return true;
+    const uint32_t ks = a2600KeysymFromQt(e);
+    if (!ks) return false;
+    if (a2600session_key_sysaction(session, ks) >= 0) {
+        if (down) a2600session_sysaction_post(session, a2600session_key_sysaction(session, ks));
+        return true;
+    }
+    return a2600session_key(session, ks, down ? 1 : 0) != 0;
+}

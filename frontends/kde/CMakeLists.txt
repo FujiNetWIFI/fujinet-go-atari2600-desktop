@@ -26,7 +26,7 @@ add_executable(fujinet-go-atari2600-kde
   SettingsDialog.cpp
   FujiNetWindows.cpp
   help/HelpWindow.cpp
-  keypad/KeypadWindow.cpp
+  controllers/ControllersWindow.cpp
   debugger/DebuggerWindow.cpp
   debugger/VideoTab.cpp
 )
@@ -75,7 +75,7 @@ if(Qt6Test_FOUND)
                  debugger/VideoTab.cpp
                  MainWindow.cpp DisplayWidget.cpp SoftDisplayWidget.cpp
                  FrameFeed.cpp SettingsDialog.cpp KeyForward.cpp
-                 FujiNetWindows.cpp help/HelpWindow.cpp keypad/KeypadWindow.cpp)
+                 FujiNetWindows.cpp help/HelpWindow.cpp controllers/ControllersWindow.cpp)
   set_target_properties(debugger_test PROPERTIES CXX_STANDARD 17)
   target_link_libraries(debugger_test PRIVATE a2600_session Qt6::Widgets
                         Qt6::GuiPrivate Qt6::Test)
@@ -93,6 +93,35 @@ if(Qt6Test_FOUND)
   endif()
   add_test(NAME debugger_kde COMMAND debugger_test)
   set_tests_properties(debugger_kde PROPERTIES
+                       ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif()
+
+# The Controllers window, offscreen, on an SDL virtual gamepad (no machine): hidden
+# at start, fixed size, keys steering the joystick, the mouse holding a button and
+# dragging the stick, the paddles' knobs, the driving wheel, the keypad, the
+# console's switches, Map taking a key and a gamepad button, F9, and a pad's row
+# with its port picker. SKIPs (77) where SDL has no virtual joysticks. SDL3 is the
+# session library's dependency, so the test finds it too.
+find_package(SDL3 CONFIG QUIET)
+if(Qt6Test_FOUND AND SDL3_FOUND)
+  add_executable(controllers_test_kde controllers_test.cpp
+                 controllers/ControllersWindow.cpp KeyForward.cpp
+                 FujiNetWindows.cpp help/HelpWindow.cpp
+                 debugger/DebuggerWindow.cpp debugger/VideoTab.cpp)
+  set_target_properties(controllers_test_kde PROPERTIES CXX_STANDARD 17)
+  target_link_libraries(controllers_test_kde PRIVATE a2600_session Qt6::Widgets
+                        Qt6::GuiPrivate Qt6::Test SDL3::SDL3)
+  target_include_directories(controllers_test_kde PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_compile_options(controllers_test_kde PRIVATE -Wall -Wextra)
+  target_compile_definitions(controllers_test_kde PRIVATE
+    A2600_SOURCE_ICON_DIR="${CMAKE_SOURCE_DIR}/data/icons")
+  if(WITH_WEBVIEW AND Qt6WebEngineWidgets_FOUND)
+    target_link_libraries(controllers_test_kde PRIVATE Qt6::WebEngineWidgets)
+    target_compile_definitions(controllers_test_kde PRIVATE HAVE_WEBENGINE=1)
+  endif()
+  add_test(NAME controllers_kde COMMAND controllers_test_kde)
+  set_tests_properties(controllers_kde PROPERTIES
+                       SKIP_RETURN_CODE 77 TIMEOUT 90
                        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
 

@@ -11,6 +11,8 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QShortcut>
+#include <QPushButton>
+#include <QTabWidget>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QLabel>
@@ -48,12 +50,19 @@ QString portSubtitle(a2600session *s, int port)
 
 } // namespace
 
-bool SettingsDialog::run(QWidget *parent, a2600session *session)
+bool SettingsDialog::run(QWidget *parent, a2600session *session, bool *openControllers, const QString &startTab)
 {
+    if (openControllers) *openControllers = false;
     QDialog dlg(parent);
     dlg.setWindowTitle(QStringLiteral("Preferences"));
-    dlg.setMinimumWidth(520);
+    dlg.setMinimumWidth(560);
     auto *outer = new QVBoxLayout(&dlg);
+    auto *tabs = new QTabWidget;
+    tabs->setObjectName(QStringLiteral("tabs"));
+    auto *machinePage = new QWidget;
+    auto *machineBox = new QVBoxLayout(machinePage);
+    auto *inputPage = new QWidget;
+    auto *inputBox = new QVBoxLayout(inputPage);
 
     /* Machine (restart) */
     auto *machine = new QGroupBox(QStringLiteral("Machine (applied by restarting the session)"));
@@ -63,7 +72,7 @@ bool SettingsDialog::run(QWidget *parent, a2600session *session)
     tv->setCurrentIndex(a2600session_get_int(session, "tv_format", A2600_TV_AUTO));
     tv->setToolTip(QStringLiteral("Auto lets each cartridge decide (frame layout detection)"));
     mform->addRow(QStringLiteral("TV format"), tv);
-    outer->addWidget(machine);
+    machineBox->addWidget(machine);
 
     /* Controllers (live) */
     auto *ports = new QGroupBox(QStringLiteral("Controllers (applied immediately, even to a game booted over FujiNet)"));
@@ -86,7 +95,7 @@ bool SettingsDialog::run(QWidget *parent, a2600session *session)
             portNote[port]->setText(portSubtitle(session, port));
         });
     }
-    outer->addWidget(ports);
+    inputBox->addWidget(ports);
 
     auto *analog = new QGroupBox(QStringLiteral("Analog sticks drive"));
     auto *aform = new QVBoxLayout(analog);
@@ -100,11 +109,22 @@ bool SettingsDialog::run(QWidget *parent, a2600session *session)
     QObject::connect(ap, &QCheckBox::toggled, &dlg, applyAnalog);
     QObject::connect(ad, &QCheckBox::toggled, &dlg, applyAnalog);
     aform->addWidget(aj); aform->addWidget(ap); aform->addWidget(ad);
-    outer->addWidget(analog);
+    inputBox->addWidget(analog);
 
     /* Gamepads: one row per pad, refreshed as they come and go */
-    auto *pads = new QGroupBox(QStringLiteral("Gamepads (assigned to ports in connection order unless chosen here)"));
-    auto *padForm = new QFormLayout(pads);
+    auto *pads = new QGroupBox(QStringLiteral("Gamepads"));
+    auto *padsBox = new QVBoxLayout(pads);
+    QCheckBox *gp = check("Enable gamepads", "Poll USB/Bluetooth gamepads (applied by restarting the session)", session,
+                          "enable_gamepad", 1);
+    gp->setObjectName(QStringLiteral("enableGamepads"));
+    padsBox->addWidget(gp);
+    auto *padNote = new QLabel(QStringLiteral("Assigned to ports in connection order unless chosen here."));
+    padNote->setStyleSheet(QStringLiteral("color: gray;"));
+    padsBox->addWidget(padNote);
+    auto *padWidget = new QWidget;
+    auto *padForm = new QFormLayout(padWidget);
+    padForm->setContentsMargins(0, 0, 0, 0);
+    padsBox->addWidget(padWidget);
     std::vector<QWidget *> padRows;
     unsigned seenGen = a2600session_gamepad_generation(session) + 1;
     auto rebuildPads = [&, padForm, session]() mutable {
@@ -141,7 +161,30 @@ bool SettingsDialog::run(QWidget *parent, a2600session *session)
     padTimer->start(1000);
     seenGen = a2600session_gamepad_generation(session);
     rebuildPads();
-    outer->addWidget(pads);
+    inputBox->addWidget(pads);
+
+    /* Reset Controls, Open Controllers */
+    auto *ctlRow = new QHBoxLayout;
+    auto *resetControls = new QPushButton(QStringLiteral("Reset Controls"));
+    resetControls->setObjectName(QStringLiteral("resetControls"));
+    resetControls->setToolTip(QStringLiteral("Put every key and gamepad button back to its default and let every "
+                                             "gamepad pick its port automatically"));
+    QObject::connect(resetControls, &QPushButton::clicked, &dlg, [&, session] {
+        if (QMessageBox::question(&dlg, QStringLiteral("Reset Controls"),
+                                  QStringLiteral("Put every key and gamepad button back to its default, and let every "
+                                                 "gamepad pick its port automatically?")) != QMessageBox::Yes)
+            return;
+        a2600session_bindings_reset(session);
+        for (int i = 0; i < a2600session_gamepad_count(session); ++i) a2600session_gamepad_assign(session, i, -1);
+        rebuildPads();
+    });
+    auto *openControllers_ = new QPushButton(QStringLiteral("Open Controllers"));
+    openControllers_->setObjectName(QStringLiteral("openControllers"));
+    ctlRow->addWidget(resetControls);
+    ctlRow->addStretch(1);
+    ctlRow->addWidget(openControllers_);
+    inputBox->addLayout(ctlRow);
+    inputBox->addStretch(1);
 
     /* Audio (live) */
     auto *audio = new QGroupBox(QStringLiteral("Audio"));
@@ -151,14 +194,13 @@ bool SettingsDialog::run(QWidget *parent, a2600session *session)
     volume->setValue(a2600session_get_int(session, "volume", 100));
     QObject::connect(volume, &QSlider::valueChanged, &dlg, [=](int v) { a2600session_set_volume(session, v); });
     audioForm->addRow(QStringLiteral("Volume"), volume);
-    outer->addWidget(audio);
+    machineBox->addWidget(audio);
 
     /* Host (restart) */
     auto *host = new QGroupBox(QStringLiteral("Host (applied by restarting the session)"));
     auto *hform = new QVBoxLayout(host);
     QCheckBox *fuji = check("Enable FujiNet", "Run the in-process FujiNet the cartridge dials into. Off means no network and a link-down CONFIG client.", session, "enable_fujinet", 1);
     QCheckBox *snd = check("Audio", "Open the system audio device", session, "enable_audio", 1);
-    QCheckBox *gp = check("Gamepads", "Poll USB/Bluetooth gamepads", session, "enable_gamepad", 1);
     QCheckBox *external = check("Use external FujiNet", "Skip the built-in FujiNet and connect to another instance: its [BOIP] listener's host and port.", session, "fujinet_external", 0);
     auto *externalAddr = new QLineEdit(QString::fromUtf8(a2600session_get_str(session, "fujinet_external_addr", "")));
     externalAddr->setPlaceholderText(QStringLiteral("127.0.0.1:11504"));
@@ -167,16 +209,28 @@ bool SettingsDialog::run(QWidget *parent, a2600session *session)
     auto *addrRow = new QFormLayout;
     addrRow->addRow(QStringLiteral("Address:port"), externalAddr);
     hform->addWidget(fuji); hform->addWidget(external); hform->addLayout(addrRow);
-    hform->addWidget(snd); hform->addWidget(gp);
-    outer->addWidget(host);
+    hform->addWidget(snd);
+    machineBox->addWidget(host);
+
+    machineBox->addStretch(1);
+    tabs->addTab(machinePage, QStringLiteral("Machine"));
+    tabs->addTab(inputPage, QStringLiteral("Input"));
+    outer->addWidget(tabs);
+    /* the Help button opens the page for the tab that is showing */
+    auto helpContext = [&dlg, tabs](int idx) {
+        dlg.setProperty("a2600HelpContext", idx == 1 ? QStringLiteral("prefs/Input") : QStringLiteral("prefs/Machine"));
+    };
+    QObject::connect(tabs, &QTabWidget::currentChanged, &dlg, helpContext);
+    tabs->setCurrentIndex(startTab.compare(QLatin1String("Input"), Qt::CaseInsensitive) == 0 ? 1 : 0);
+    helpContext(tabs->currentIndex());
 
     /* Help, F1 and Ctrl+Shift+H (the app's shortcuts don't reach a modal dialog) */
-    dlg.setProperty("a2600HelpContext", QStringLiteral("prefs/Machine"));
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel | QDialogButtonBox::Help);
     QObject::connect(buttons, &QDialogButtonBox::helpRequested, &dlg, [&dlg] { a2600HelpFor(&dlg); });
     for (const char *key : { "F1", "Ctrl+Shift+H" })
         new QShortcut(QKeySequence(QString::fromLatin1(key)), &dlg, [&dlg] { a2600HelpFor(&dlg); });
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, [&] {
+    bool wantControllers = false;
+    auto tryAccept = [&] {
         char hostName[64];
         int port;
         const QByteArray addr = externalAddr->text().trimmed().toUtf8();
@@ -185,16 +239,24 @@ bool SettingsDialog::run(QWidget *parent, a2600session *session)
             QMessageBox::warning(&dlg, QStringLiteral("External FujiNet"),
                                  QStringLiteral("\"%1\" is not an address:port. Example: "
                                                 "127.0.0.1:11504").arg(externalAddr->text()));
+            tabs->setCurrentIndex(0);
             externalAddr->setFocus();
+            wantControllers = false;
             return;
         }
         dlg.accept();
+    };
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, tryAccept);
+    QObject::connect(openControllers_, &QPushButton::clicked, &dlg, [&] {
+        wantControllers = true;
+        tryAccept();
     });
     QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
     outer->addWidget(buttons);
 
     if (dlg.exec() != QDialog::Accepted)
         return false;
+    if (openControllers) *openControllers = wantControllers;
 
     bool changed = false;
     changed |= commit(session, "tv_format", A2600_TV_AUTO, tv->currentIndex());
