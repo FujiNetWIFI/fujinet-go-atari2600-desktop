@@ -66,8 +66,39 @@ struct a2600session {
     int  switch_state[A2600_SW_COUNT];    /* toggling switches: current position */
 
     /* keys the keyboard currently holds, by target, so a release clears
-     * exactly what its press asserted even if the binding changed meanwhile */
+     * exactly what its press asserted even if the binding changed meanwhile
+     * (UI thread only) */
     uint32_t held_keysym[A2600_TARGET_COUNT];
+
+    /* ---- controllers (input.c) ----
+     * What drives each target, one bit per source (A2600_SRC_*), so letting
+     * go of one source never releases another's hold. input_mtx covers all of
+     * this, the pulse thread's state and the calls that hand the merged result
+     * to Stella; it is a leaf lock (nothing below it takes another). */
+    pthread_mutex_t input_mtx;
+    uint32_t src[A2600_TARGET_COUNT];
+    uint32_t sent_acts[2];     /* per port: the actions Stella was last told are
+                                * held (bit per a2600_action), after the
+                                * opposed pairs cancelled */
+    uint8_t  sent_sw[2];       /* Select, Reset as last sent */
+    int      analog_val[2][3]; /* per port: paddle A, paddle B, driving: the
+                                * position last handed to Stella */
+    uint32_t analog_owner[2][3]; /* the source that wrote it last (0 = none) */
+    pthread_t pulse_thread;
+    pthread_cond_t pulse_cond;
+    int pulse_thread_up, pulse_quit;
+    uint64_t pulse_until[A2600_TARGET_COUNT]; /* machine frame a pulse ends at */
+
+    /* ---- gamepads (gamepad_sdl.c) ---- */
+    /* the pad generation, carried across gamepad_stop/start so a restart of
+     * the session never replays an old toast */
+    unsigned pad_gen_base;
+    /* a pad thread has run before: its first scan finds the same pads again,
+     * which is no hot-plug (no toast, no generation change) */
+    int pad_restarted;
+    /* the last hot-plug event, for a frontend toast */
+    pthread_mutex_t pad_event_mtx;
+    char pad_event[128];
 
     void *host;               /* StellaHost*, session.cpp only */
     void *audio;              /* audio_sdl.c state, NULL until started */
@@ -95,6 +126,19 @@ void fujinet_stop(struct a2600session *s);
  * first dial-out finds the listener. Returns 0 once up, -1 on timeout. */
 int  fujinet_wait_for_boip(struct a2600session *s, int timeout_ms);
 
+/* Who is holding an input down (the bits of src[]): the keyboard, the
+ * Controllers window's mouse, a timed pulse (a wheel notch, a menu's Select),
+ * and for each gamepad (by the stable owner number its slot was given, 0 to
+ * A2600_MAX_PADS - 1) its buttons and its stick / D-pad separately. So letting
+ * go of one never releases another, even two pads or two buttons bound to the
+ * one key. */
+#define A2600_MAX_PADS 8
+#define A2600_SRC_KEYBOARD   (1u << 0)
+#define A2600_SRC_POINTER    (1u << 1)
+#define A2600_SRC_PULSE      (1u << 2)
+#define A2600_SRC_PAD(owner)   (1u << (3 + (owner)))
+#define A2600_SRC_STICK(owner) (1u << (3 + A2600_MAX_PADS + (owner)))
+
 /* bindings.c */
 void bindings_init(struct a2600session *s);
 
@@ -105,9 +149,15 @@ void audio_stop(struct a2600session *s);
 /* gamepad_sdl.c */
 int  gamepad_start(struct a2600session *s);
 void gamepad_stop(struct a2600session *s);
-/* Called by the gamepad thread with the button/axis state it resolved. */
-void session_gamepad_apply(struct a2600session *s, int port, int act, int down);
-void session_gamepad_analog(struct a2600session *s, int port, int paddle, int value);
+/* Called by the gamepad thread on a connect/disconnect. */
+void session_gamepad_event(struct a2600session *s, const char *text);
+
+/* session.cpp: hand one resolved input to Stella. Safe from any thread (it
+ * only queues an event); a no-op while the machine is stopped, which input.c
+ * accounts for by re-sending what is held when the machine starts. */
+void session_machine_event(struct a2600session *s, int port, int act, int down);
+void session_machine_switch(struct a2600session *s, int sw, int down); /* SELECT, RESET */
+void session_machine_analog(struct a2600session *s, int port, int paddle, int value);
 
 #ifdef __cplusplus
 }

@@ -31,6 +31,7 @@
 
 extern "C" {
 #include "session_internal.h"
+#include "input.h"
 #include "a2600debug.h"
 }
 
@@ -168,6 +169,24 @@ extern "C" void session_set_error(struct a2600session* s, const char* fmt, ...)
   va_end(ap);
 }
 
+// The last gamepad hot-plug event, for a frontend's toast. Kept in the session
+// (not the pad thread's state) so it survives the thread's stop and start.
+extern "C" void session_gamepad_event(struct a2600session* s, const char* text)
+{
+  pthread_mutex_lock(&s->pad_event_mtx);
+  snprintf(s->pad_event, sizeof s->pad_event, "%s", text ? text : "");
+  pthread_mutex_unlock(&s->pad_event_mtx);
+}
+
+extern "C" int a2600session_gamepad_last_event(a2600session* s, char* dst, int dstsz)
+{
+  if(!dst || dstsz <= 0) return 0;
+  pthread_mutex_lock(&s->pad_event_mtx);
+  const int len = snprintf(dst, static_cast<size_t>(dstsz), "%s", s->pad_event);
+  pthread_mutex_unlock(&s->pad_event_mtx);
+  return len;
+}
+
 #ifdef A2600_GAMEPAD_STUB
 extern "C" int gamepad_start(struct a2600session* s)
 {
@@ -215,6 +234,8 @@ extern "C" a2600session* a2600session_new(const a2600session_paths* paths)
 
   pthread_mutex_init(&s->settings_mtx, nullptr);
   pthread_mutex_init(&s->sysact_mtx, nullptr);
+  pthread_mutex_init(&s->pad_event_mtx, nullptr);
+  input_init(s);
 
   if(paths_init(s, paths ? paths->config_dir : nullptr,
                 paths ? paths->data_dir : nullptr) != 0)
@@ -246,11 +267,14 @@ extern "C" void a2600session_free(a2600session* s)
 {
   if(!s) return;
   a2600session_stop(s);
+  input_stop(s);
   a2600session_settings_flush(s);
   settings_free_all(s);
   a2600debug_destroy(s);
   delete host_of(s);
   pthread_mutex_destroy(&s->sysact_mtx);
+  pthread_mutex_destroy(&s->pad_event_mtx);
+  input_destroy(s);
   free(s);
 }
 
@@ -436,12 +460,16 @@ extern "C" int a2600session_start(a2600session* s, const a2600session_start_opts
   }
 
   s->running = 1;
+  // the new machine holds nothing: hand it whatever is still held (a key down
+  // across a restart, a pad's stick)
+  input_resync(s);
   return 0;
 }
 
 extern "C" void a2600session_stop(a2600session* s)
 {
   if(!s->running) return;
+  input_stop(s);       // pulses are counted in this machine's frames
   audio_stop(s);
   gamepad_stop(s);
   host_of(s)->stop();
@@ -487,6 +515,7 @@ extern "C" int a2600session_reboot_to_config(a2600session* s)
   s->cart_path[0] = '\0';
   s->opts.cart_path = nullptr;
   a2600session_set_str(s, "cart", "");
+  input_resync(s);
   return 0;
 }
 
@@ -562,56 +591,63 @@ extern "C" void a2600session_set_volume(a2600session* s, int percent)
 
 // ---- input -----------------------------------------------------------------
 
+// The Controllers window's mouse (and anything else that presses a control
+// directly) is the pointer source: a button on screen is a button, and routing
+// it through the key table would mean it stopped working the moment someone
+// remapped the key it was pretending to be.
 extern "C" void a2600session_press(a2600session* s, int target, int down)
 {
-  if(!s->running || target < 0 || target >= A2600_TARGET_COUNT) return;
-  StellaHost& host = *host_of(s);
-
-  if(target < 2 * A2600_ACT_PER_PORT)
-  {
-    host.enqueueEvent(port_event(target / A2600_ACT_PER_PORT,
-                                 target % A2600_ACT_PER_PORT), down ? 1 : 0);
-    return;
-  }
-  target -= 2 * A2600_ACT_PER_PORT;
-  if(target < A2600_SW_COUNT)
-  {
-    switch(target)
-    {
-      case A2600_SW_SELECT: host.enqueueEvent(Event::ConsoleSelect, down ? 1 : 0); break;
-      case A2600_SW_RESET:  host.enqueueEvent(Event::ConsoleReset, down ? 1 : 0); break;
-      default:
-        if(down) a2600session_switch_set(s, target, !s->switch_state[target]);
-        break;
-    }
-    return;
-  }
-  if(down)
-    a2600session_sysaction(s, target - A2600_SW_COUNT);
+  if(target < 0 || target >= A2600_TARGET_COUNT) return;
+  input_press(s, A2600_SRC_POINTER, target, down);
 }
 
 extern "C" void a2600session_analog(a2600session* s, int port, int paddle, int value)
 {
-  if(!s->running) return;
-  if(value < -32767) value = -32767;
-  if(value > 32767) value = 32767;
-  Event::Type t;
-  if(paddle < 0)
-    t = port ? Event::RightDrivingAnalog : Event::LeftDrivingAnalog;
-  else if(paddle == 0)
-    t = port ? Event::RightPaddleAAnalog : Event::LeftPaddleAAnalog;
-  else
-    t = port ? Event::RightPaddleBAnalog : Event::LeftPaddleBAnalog;
-  host_of(s)->enqueueEvent(t, value);
+  input_analog(s, A2600_SRC_POINTER, port, paddle < 0 ? 2 : (paddle ? 1 : 0), value);
 }
 
+extern "C" void a2600session_pointer_set(a2600session* s, int port, unsigned mask)
+{
+  input_port_set(s, A2600_SRC_POINTER, port, mask);
+}
+
+extern "C" void a2600session_pointer_analog(a2600session* s, int port, int paddle, int value,
+                                           int active)
+{
+  const int axis = paddle < 0 ? 2 : (paddle ? 1 : 0);
+  if(active)
+    input_analog(s, A2600_SRC_POINTER, port, axis, value);
+  else
+    input_analog_end(s, A2600_SRC_POINTER, port, axis);
+}
+
+extern "C" int a2600session_analog_get(a2600session* s, int port, int paddle)
+{
+  return input_analog_get(s, port, paddle < 0 ? 2 : (paddle ? 1 : 0));
+}
+
+extern "C" void a2600session_twist_pulse(a2600session* s, int port, int dir)
+{
+  if(port < 0 || port > 1 || dir == 0) return;
+  input_pulse(s, A2600_TARGET_PORT(port, dir > 0 ? A2600_ACT_DRIVE_CW : A2600_ACT_DRIVE_CCW), 6);
+}
+
+extern "C" unsigned a2600session_buttons_held(a2600session* s, int port)
+{
+  return input_held(s, port);
+}
+
+extern "C" int a2600session_switch_held(a2600session* s, int sw)
+{
+  return input_switch_held(s, sw);
+}
+
+// Momentary console switches as a whole: press, hold ~7 frames, release (a
+// pulse thread does the release; this returns at once).
 extern "C" void a2600session_switch_pulse(a2600session* s, int sw)
 {
-  if(!s->running) return;
-  const Event::Type t = (sw == A2600_SW_SELECT) ? Event::ConsoleSelect : Event::ConsoleReset;
-  // Held for a few frames: the machine samples the switches once a frame,
-  // and real software debounces them over several.
-  host_of(s)->pulseEvent(t, 7);   // ~120 ms; released by the machine thread
+  if(sw != A2600_SW_SELECT && sw != A2600_SW_RESET) return;
+  input_pulse(s, A2600_TARGET_SWITCH(sw), 7);   // ~120 ms
 }
 
 extern "C" int a2600session_switch_get(a2600session* s, int sw)
@@ -676,17 +712,34 @@ extern "C" int a2600session_sysaction_take(a2600session* s, int* out)
   return found;
 }
 
-// The gamepad thread's entry points: same routing as press/analog, but
-// never touching the settings or the debugger from that thread.
-extern "C" void session_gamepad_apply(struct a2600session* s, int port, int act, int down)
+// The input layer's way into Stella: queue the event, from any thread, never
+// touching the settings or the debugger.
+extern "C" void session_machine_event(struct a2600session* s, int port, int act, int down)
 {
   if(!s->running || port < 0 || port > 1 || act < 0 || act >= A2600_ACT_PER_PORT) return;
   host_of(s)->enqueueEvent(port_event(port, act), down ? 1 : 0);
 }
 
-extern "C" void session_gamepad_analog(struct a2600session* s, int port, int paddle, int value)
+extern "C" void session_machine_switch(struct a2600session* s, int sw, int down)
 {
-  a2600session_analog(s, port, paddle, value);
+  if(!s->running) return;
+  if(sw == A2600_SW_SELECT)     host_of(s)->enqueueEvent(Event::ConsoleSelect, down ? 1 : 0);
+  else if(sw == A2600_SW_RESET) host_of(s)->enqueueEvent(Event::ConsoleReset, down ? 1 : 0);
+}
+
+extern "C" void session_machine_analog(struct a2600session* s, int port, int paddle, int value)
+{
+  if(!s->running) return;
+  Event::Type t;
+  if(paddle < 0)
+    t = port ? Event::RightDrivingAnalog : Event::LeftDrivingAnalog;
+  else if(paddle == 0)
+    t = port ? Event::RightPaddleAAnalog : Event::LeftPaddleAAnalog;
+  else
+    t = port ? Event::RightPaddleBAnalog : Event::LeftPaddleBAnalog;
+  // Stella acts on an analog event for one frame only unless it keeps changing,
+  // so the host owns a nonzero position and re-sends it every frame; 0 releases it.
+  host_of(s)->setAnalogHold(t, value);
 }
 
 // ---- controller types (live) -----------------------------------------------

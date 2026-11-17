@@ -119,7 +119,12 @@ typedef struct {
 
 /* Fills opts from the settings store (keys: cart tv_format port0_type
  * port1_type analog_joystick analog_paddle analog_driving enable_fujinet
- * fujinet_external fujinet_external_addr enable_audio enable_gamepad). */
+ * fujinet_external fujinet_external_addr enable_audio enable_gamepad). The
+ * session also keeps "bindings" (the key and pad bindings that differ from the
+ * defaults) and "pad_assign" (the remembered pad -> port choices); the
+ * Controllers window's own setting is "controllers_show_bindings" (1 = label
+ * the controls with the keys bound to them), read and written by the frontends
+ * through a2600session_get_int / _set_int. */
 void a2600session_default_opts(a2600session *s, a2600session_start_opts *opts);
 
 /* Starts FujiNet (if enabled) and then the emulator.
@@ -222,25 +227,140 @@ typedef enum {
 #define A2600_TARGET_SYSACT(sa)      (2 * A2600_ACT_PER_PORT + A2600_SW_COUNT + (sa))
 #define A2600_TARGET_COUNT           (2 * A2600_ACT_PER_PORT + A2600_SW_COUNT + A2600_SYSACT_COUNT)
 
-/* Apply one control directly, the way the on-screen keypad window does.
- * `down` is press/release. The momentary console switches (Select, Reset)
- * follow down; Color/B&W and the difficulty switches TOGGLE on press. */
+/* Apply one control directly, the way the Controllers window's buttons do:
+ * the POINTER source, one of several ways of holding an input (the keyboard,
+ * each gamepad and a timed pulse are the others), so letting go here never
+ * releases what another source still holds. `down` is press/release. The
+ * momentary console switches (Select, Reset) follow down; Color/B&W and the
+ * difficulty switches TOGGLE on press; a system action runs on press. */
 void a2600session_press(a2600session *s, int target, int down);
 /* Analog input for a paddle (A: 0, B: 1) or the driving controller
- * (paddle -1) on `port`: value in -32767..32767. Continuous; the last value
- * per frame wins. */
+ * (paddle -1) on `port`: value in -32767..32767, as the pointer. Continuous;
+ * the last value per frame wins. */
 void a2600session_analog(a2600session *s, int port, int paddle, int value);
-/* Momentary console switches as a whole: press, hold ~7 frames, release (the
- * machine thread does the release; this returns at once).
+/* Momentary console switches as a whole: press, hold ~7 frames, release (a
+ * pulse thread does the release; this returns at once).
  * What the Select/Reset menu items do. */
 void a2600session_switch_pulse(a2600session *s, int sw);
+
+/* ---- the Controllers window's own input ----------------------------------
+ * The window's mouse holds controls through the pointer source. A drag on the
+ * joystick changes direction without letting go, so it sets the whole mask at
+ * once; pass 0 when the drag ends or the pointer leaves. */
+/* The pointer's hold on `port`'s actions: bit per a2600_action (the joystick
+ * ones, from a2600session_stick_from_vector, or any other), ORed with every
+ * other source. */
+void a2600session_pointer_set(a2600session *s, int port, unsigned mask);
+/* A drag on a paddle's knob (paddle 0 or 1) or the driving wheel (paddle -1):
+ * `value` -32767..32767 as a2600session_analog, from
+ * a2600session_knob_from_vector. `active` 0 ends the drag: the position stays
+ * (a paddle holds where it was left) but is no longer the pointer's. A gamepad
+ * writes an analog position only when it moves, so a still pad never fights a
+ * drag. */
+void a2600session_pointer_analog(a2600session *s, int port, int paddle, int value,
+                                 int active);
+/* The position an analog controller was last handed, -32767..32767 (0 =
+ * centre), for drawing a knob where it is. It reflects the analog sources (the
+ * pointer, a gamepad stick), not a paddle's relative turn keys, which Stella
+ * integrates itself. */
+int  a2600session_analog_get(a2600session *s, int port, int paddle);
+/* One notch of the driving wheel from a mouse wheel or a trackpad: dir < 0
+ * counter-clockwise, > 0 clockwise; held for 6 frames, so a program that polls
+ * once a frame sees it. */
+void a2600session_twist_pulse(a2600session *s, int port, int dir);
+/* What the console sees held on `port` right now, from every source (the
+ * keyboard, gamepads, the pointer, pulses), one bit per a2600_action, with the
+ * opposed pairs cancelled. For the controllers' highlights: the window is a
+ * gamepad tester. */
+unsigned a2600session_buttons_held(a2600session *s, int port);
+/* Whether a console switch is held from any source: Select and Reset follow
+ * their buttons (and the menus' pulses); the toggling switches report where
+ * they are (1 = Color; difficulty A). */
+int  a2600session_switch_held(a2600session *s, int sw);
 /* Current position of a toggling switch (Color/B&W: 1 = colour; difficulty:
  * 1 = A). */
 int  a2600session_switch_get(a2600session *s, int sw);
 void a2600session_switch_set(a2600session *s, int sw, int on);
 void a2600session_sysaction(a2600session *s, int sysact);
-/* Release everything the keyboard holds (focus loss). */
+/* Release everything the keyboard and the window's mouse hold (focus loss).
+ * A gamepad is a physical thing and is left alone. */
 void a2600session_release_all(a2600session *s);
+
+/* ---- the on-screen controllers ---------------------------------------------
+ * One layout for every toolkit: a controller view per port that follows what
+ * is plugged in (the joystick, the paddle pair, the driving controller or the
+ * keypad), over the six-switch console. In the layout units of
+ * DESIGN-atari.md (a CX40's case is 8.0 across, a CX30 paddle 7.0 x 6.0, the
+ * console panel 24.0 x 5.2 over a 1.6 wood strip) from the top-left, so a
+ * frontend draws each device's art in its own local coordinates plus the part's
+ * offset; every view has the same extent, so the window never changes size
+ * when a game swaps a controller. `target` is the
+ * binding target a part drives (A2600_TARGET_*), or -1 for the parts that are
+ * dragged (the stick, a knob, the wheel) and the bodies and captions that are
+ * only drawn. Static; valid for the process. */
+typedef enum {
+    A2600_CTL_CAPTION = 0, /* text over a port: "Left controller" */
+    A2600_CTL_BODY,        /* a controller's (or the console's) case, drawn only */
+    A2600_CTL_STICK,       /* the joystick's shaft seen from above: drag to tilt it
+                              (a2600session_stick_from_vector); round */
+    A2600_CTL_KNOB,        /* a paddle's knob: drag to turn it
+                              (a2600session_knob_from_vector), the wheel nudges it;
+                              `paddle` is 0 or 1; round */
+    A2600_CTL_WHEEL,       /* the driving controller's wheel: drag to turn it endlessly
+                              (a2600session_vector_angle, one twist pulse per
+                              A2600_WHEEL_STEP_DEG), the wheel notches it; round */
+    A2600_CTL_TURN,        /* a turn arrow (a paddle's left/right, the wheel's CCW/CW):
+                              a held target */
+    A2600_CTL_BUTTON,      /* a rectangular button: a paddle's fire button, the console's
+                              SELECT, RESET and POWER (a power-cycle), the session's
+                              STOP (Pause) */
+    A2600_CTL_ROUND_BUTTON, /* a round one: the joystick's fire button, a keypad key;
+                              hit as a circle */
+    A2600_CTL_SWITCH       /* a latching console switch (COLOR/B&W, a difficulty):
+                              press to flip; a2600session_switch_get is its position */
+} a2600_control_kind;
+
+typedef struct {
+    int kind;            /* a2600_control_kind */
+    const char *label;   /* "FIRE", "5", "RESET", "A / B" */
+    const char *legend;  /* the console's printed legend ("GAME SELECT"), or a hint, or NULL */
+    int port;            /* 0 left, 1 right, -1 console */
+    int target;          /* binding target, or -1 */
+    int paddle;          /* 0 or 1 for a paddle's parts, -1 for the driving wheel's
+                            (the paddle argument of a2600session_pointer_analog) */
+    float x, y, w, h;
+} a2600_control;
+
+/* The layout for what is plugged into the two ports (a2600_ctrl_type; AUTO and
+ * anything unknown is drawn as a joystick, so pass a2600session_view_type for
+ * the effective type); *n is its entry count and width/height (layout units)
+ * its extent. */
+const a2600_control *a2600session_controls_layout(int left_type, int right_type, int *n,
+                                                  float *width, float *height);
+/* The topmost pressable part under a point in layout units, as an index into
+ * the layout, or -1 (bodies and captions are never hit). Round parts are
+ * ellipses. */
+int a2600session_controls_hit(int left_type, int right_type, float x, float y);
+/* The controller type to draw on `port`: what is set, or for AUTO what Stella
+ * detected; never AUTO. */
+int a2600session_view_type(a2600session *s, int port);
+
+/* The joystick drag: the direction bits (1 << A2600_ACT_JOY_*, one or two) for a
+ * pointer at (dx, dy) from the stick's centre (+x right, +y down, in any unit)
+ * with `radius` the stick's reach: nothing inside a quarter of it, else one of
+ * eight 45-degree sectors. Feed it to a2600session_pointer_set. */
+unsigned a2600session_stick_from_vector(float dx, float dy, float radius);
+/* A paddle knob drag: its position, -32767..32767, for a pointer at (dx, dy)
+ * from the knob's centre: the pot turns +-A2600_KNOB_TRAVEL_DEG from straight
+ * up (clockwise is positive) and holds its end beyond that. Feed it to
+ * a2600session_pointer_analog. */
+#define A2600_KNOB_TRAVEL_DEG 135.0f
+int a2600session_knob_from_vector(float dx, float dy);
+/* A pointer's angle from straight up, clockwise, -180..180 degrees. */
+float a2600session_vector_angle(float dx, float dy);
+/* The driving wheel turns endlessly: call a2600session_twist_pulse once per
+ * this many degrees of drag. */
+#define A2600_WHEEL_STEP_DEG 22.5f
 
 /* ---- keyboard translation ------------------------------------------------
  * keysym is an X11/xkb keysym (== a GDK keyval; Qt, Win32 and AppKit map
@@ -281,6 +401,10 @@ uint32_t a2600session_keysym_from_evdev(unsigned code);
 uint32_t a2600session_keysym_from_macos_keycode(unsigned keycode);
 /* Name for a keysym ("F1", "Space", "a", "Keypad 5"); returns length. */
 int a2600session_keysym_name(uint32_t keysym, char *dst, int dstsz);
+/* Keys that belong to the app and are never bound to a target: F9 (the
+ * Controllers window), F11 (full screen) and F12 (the debugger). Map refuses
+ * them, and an old settings file that holds one drops it. */
+int a2600session_key_reserved(uint32_t keysym);
 
 /* ---- remappable bindings --------------------------------------------------
  * Every target can be driven by one keyboard key and one gamepad button.
@@ -322,6 +446,8 @@ void a2600session_binding_set_key(a2600session *s, int target, uint32_t keysym,
                                   char *stolen, int stolensz);
 void a2600session_binding_set_button(a2600session *s, int target, int button,
                                      char *stolen, int stolensz);
+/* Unbinds both the key and the pad button of a target (the window's Clear). */
+void a2600session_binding_clear(a2600session *s, int target);
 void a2600session_bindings_reset(a2600session *s);
 const char *a2600_pad_button_name(int button);
 /* The target a keysym / pad button drives, or -1. */
@@ -345,14 +471,26 @@ void a2600session_set_analog(a2600session *s, int joystick, int paddle, int driv
 
 /* ---- gamepads (SDL, hotplugged; started by a2600session_start) ---------
  * Pads are assigned to ports in connection order unless assigned
- * explicitly. What a pad drives depends on the port's controller type. */
+ * explicitly. What a pad drives depends on the port's controller type. An
+ * explicit assignment is remembered (setting "pad_assign", by the pad's GUID,
+ * else its name) and comes back when the pad is plugged in again or on the
+ * next run. A pad that is unplugged, moves port or changes what it plays lets
+ * go of everything it held. Idx is the pad's index in the list, 0..count-1; it
+ * changes when a pad goes away, so a frontend refreshes its rows when the
+ * generation changes. */
 int  a2600session_gamepad_count(a2600session *s);
 int  a2600session_gamepad_name(a2600session *s, int idx, char *dst, int dstsz);
 void a2600session_gamepad_assign(a2600session *s, int idx, int port); /* -1 = auto */
 int  a2600session_gamepad_assignment(a2600session *s, int idx);
 int  a2600session_gamepad_effective_port(a2600session *s, int idx);
-/* Bumped on every add/remove so a frontend can refresh its lists cheaply. */
+/* Bumped on every add/remove so a frontend can refresh its lists cheaply. It
+ * carries across a restart of the session (a start does not replay old
+ * toasts). */
 unsigned a2600session_gamepad_generation(a2600session *s);
+/* The last connect/disconnect as a line for a toast ("Connected: Xbox
+ * Controller (left port)", "Disconnected: ..."); returns its length. A frontend
+ * shows it when the generation changes. */
+int  a2600session_gamepad_last_event(a2600session *s, char *dst, int dstsz);
 
 /* ---- cross-thread system actions ------------------------------------------
  * The gamepad thread cannot call into a UI toolkit, so a system action it

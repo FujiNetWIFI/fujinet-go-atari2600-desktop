@@ -167,6 +167,9 @@ set(A2600_SESSION_C_SOURCES
   src/fujinet_runtime.c
   src/audio_sdl.c
   src/bindings.c
+  src/input.c
+  src/pad_assign.c
+  src/controls.c
   src/hid_keys.c
   src/memtools.c
   src/m6502dasm.c

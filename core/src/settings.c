@@ -46,7 +46,7 @@ static void set_locked(struct a2600session *s, const char *key, const char *val)
 void settings_init(struct a2600session *s)
 {
     FILE *fp;
-    char line[1024];
+    char line[16384];   /* pad_assign and bindings alone can run to several KB */
 
     pthread_mutex_init(&s->settings_mtx, NULL);
     fp = fopen(s->settings_file, "r");

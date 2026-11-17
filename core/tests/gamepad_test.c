@@ -42,6 +42,19 @@ int main(void)
     assign[0] = 1; assign[1] = 1;
     check(a2600_pad_for_port(assign, 2, 1) == 0 && a2600_pad_for_port(assign, 2, 0) == -1, "two pads on one port: the first wins, the other port stays empty");
 
+    /* an analog axis as a position: the dead zone is taken out, the ends stay reachable */
+    check(a2600_paddle_from_axis(0.f, A2600_STICK_DEADZONE) == 0.f, "a centred axis is the middle");
+    check(a2600_paddle_from_axis(0.10f, A2600_STICK_DEADZONE) == 0.f && a2600_paddle_from_axis(-0.10f, A2600_STICK_DEADZONE) == 0.f,
+          "drift inside the dead zone is nothing");
+    check(a2600_paddle_from_axis(1.f, A2600_STICK_DEADZONE) == 1.f && a2600_paddle_from_axis(-1.f, A2600_STICK_DEADZONE) == -1.f,
+          "the ends are still reached");
+    {
+        const float half = a2600_paddle_from_axis(0.5f, A2600_STICK_DEADZONE);
+        check(half > 0.43f && half < 0.44f, "the rest is rescaled (half deflection is about 0.43)");
+        check(a2600_paddle_from_axis(-0.5f, A2600_STICK_DEADZONE) == -half, "symmetrically");
+        check(a2600_paddle_from_axis(2.f, A2600_STICK_DEADZONE) == 1.f, "and clamped");
+    }
+
     /* SDL button tables round-trip */
     {
         int b, ok = 1;

@@ -32,6 +32,13 @@ int a2600_dir_from_stick(float x, float y, int prev, float enter, float exit);
  * pad i's assignment (-1 = automatic). Returns the pad index or -1. Pure. */
 int a2600_pad_for_port(const int *assign, int npads, int port);
 
+/* The dead zone a stick has as an analog position (a paddle, the wheel). */
+#define A2600_STICK_DEADZONE 0.12f
+
+/* An analog axis as a position, -1..1: nothing inside `deadzone`, and the
+ * rest rescaled so the stick still reaches its ends. Pure. */
+float a2600_paddle_from_axis(float value, float deadzone);
+
 /* SDL3's SDL_GamepadButton (a uint8_t) to the public numbering, and back.
  * Explicit tables, never a cast, so an SDL reordering cannot desync them. */
 int a2600_pad_button_from_sdl(uint8_t button);

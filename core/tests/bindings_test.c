@@ -77,6 +77,54 @@ int main(void)
     check(s && a2600session_target_for_key(s, A2600_KEYSYM_SPACE) == A2600_TARGET_PORT(1, A2600_ACT_JOY_FIRE), "the rebinding persisted");
     a2600session_bindings_reset(s);
     check(a2600session_target_for_key(s, A2600_KEYSYM_SPACE) == A2600_TARGET_PORT(0, A2600_ACT_JOY_FIRE), "reset restores the defaults");
+
+    /* Clear: both the key and the pad button of one target, nothing else */
+    a2600session_bindings_reset(s);
+    a2600session_binding_clear(s, A2600_TARGET_PORT(0, A2600_ACT_JOY_FIRE));
+    b = a2600session_binding_get(s, A2600_TARGET_PORT(0, A2600_ACT_JOY_FIRE));
+    check(b.keysym == 0 && b.button == A2600_PAD_BTN_NONE, "Clear unbinds the key and the pad button");
+    b = a2600session_binding_get(s, A2600_TARGET_PORT(0, A2600_ACT_PADDLE_A_FIRE));
+    check(b.keysym == A2600_KEYSYM_SPACE && b.button == A2600_PAD_BTN_SOUTH, "and leaves the other targets that shared them");
+    check(a2600session_target_for_key(s, A2600_KEYSYM_SPACE) == A2600_TARGET_PORT(0, A2600_ACT_PADDLE_A_FIRE), "so Space finds the next holder");
+    a2600session_binding_clear(s, -1);
+    a2600session_binding_clear(s, A2600_TARGET_COUNT);
+    check(1, "Clear of a bad target is ignored");
+    a2600session_free(s);
+    s = a2600session_new(&p);
+    b = a2600session_binding_get(s, A2600_TARGET_PORT(0, A2600_ACT_JOY_FIRE));
+    check(s && b.keysym == 0 && b.button == A2600_PAD_BTN_NONE, "a cleared target stays cleared across a session");
+    a2600session_bindings_reset(s);
+    b = a2600session_binding_get(s, A2600_TARGET_PORT(0, A2600_ACT_JOY_FIRE));
+    check(b.keysym == A2600_KEYSYM_SPACE && b.button == A2600_PAD_BTN_SOUTH, "and Defaults brings it back");
+
+    /* the keys the app owns can never be bound: F9 (Controllers), F11, F12 */
+    check(a2600session_key_reserved(A2600_KEYSYM_F9) && a2600session_key_reserved(A2600_KEYSYM_F11)
+          && a2600session_key_reserved(A2600_KEYSYM_F12), "F9, F11 and F12 are reserved");
+    check(!a2600session_key_reserved(A2600_KEYSYM_F1) && !a2600session_key_reserved(A2600_KEYSYM_F10)
+          && !a2600session_key_reserved('a'), "and nothing else is");
+    snprintf(stolen, sizeof stolen, "stale");
+    a2600session_binding_set_key(s, A2600_TARGET_PORT(1, A2600_ACT_JOY_FIRE), A2600_KEYSYM_F9, stolen, sizeof stolen);
+    b = a2600session_binding_get(s, A2600_TARGET_PORT(1, A2600_ACT_JOY_FIRE));
+    check(b.keysym == 'f' && stolen[0] == '\0', "binding F9 is refused (the target keeps its key, nothing is reported stolen)");
+    a2600session_binding_set_key(s, A2600_TARGET_PORT(1, A2600_ACT_JOY_FIRE), A2600_KEYSYM_F12, NULL, 0);
+    a2600session_binding_set_key(s, A2600_TARGET_PORT(1, A2600_ACT_JOY_FIRE), A2600_KEYSYM_F11, NULL, 0);
+    b = a2600session_binding_get(s, A2600_TARGET_PORT(1, A2600_ACT_JOY_FIRE));
+    check(b.keysym == 'f', "and so are F11 and F12");
+    check(a2600session_key(s, A2600_KEYSYM_F9, 1) == 0 && a2600session_target_for_key(s, A2600_KEYSYM_F12) == -1,
+          "they drive nothing");
+    {
+        /* an old settings file that bound one: dropped, not honoured */
+        char packed[64];
+        snprintf(packed, sizeof packed, "%d.k:%u", A2600_TARGET_PORT(1, A2600_ACT_JOY_FIRE), (unsigned)A2600_KEYSYM_F9);
+        a2600session_set_str(s, "bindings", packed);
+        a2600session_free(s);
+        s = a2600session_new(&p);
+        b = a2600session_binding_get(s, A2600_TARGET_PORT(1, A2600_ACT_JOY_FIRE));
+        check(s && b.keysym != A2600_KEYSYM_F9 && a2600session_target_for_key(s, A2600_KEYSYM_F9) == -1,
+              "a reserved key in the settings file is dropped on load");
+        a2600session_bindings_reset(s);
+    }
+
     a2600session_free(s);
 
     printf("%d failure(s)\n", failures);

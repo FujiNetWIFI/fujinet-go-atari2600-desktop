@@ -28,6 +28,7 @@
 #include <string.h>
 
 #include "hid_keys.h"
+#include "input.h"
 #include "session_internal.h"
 
 typedef struct {
@@ -142,6 +143,14 @@ static void compute_defaults_locked(void)
     }
 }
 
+/* F9 opens the Controllers window, F11 is full screen, F12 the debugger: they
+ * belong to the app, in every frontend, and are never bound to a target. */
+int a2600session_key_reserved(uint32_t keysym)
+{
+    return keysym == A2600_KEYSYM_F9 || keysym == A2600_KEYSYM_F11
+        || keysym == A2600_KEYSYM_F12;
+}
+
 static uint32_t fold(uint32_t keysym)
 {
     if (keysym >= 'A' && keysym <= 'Z') return keysym + 32;
@@ -165,7 +174,11 @@ static void apply_persisted_locked(const char *packed)
         const char *end = strchr(p, ' ');
         if (sscanf(p, "%d.%c:%ld", &target, &kind, &value) == 3
             && target >= 0 && target < A2600_TARGET_COUNT) {
-            if (kind == 'k') s_table[target].keysym = (uint32_t)value;
+            if (kind == 'k') {
+                /* a reserved key in an old settings file is simply dropped */
+                s_table[target].keysym = a2600session_key_reserved((uint32_t)value)
+                                             ? 0 : (uint32_t)value;
+            }
             else if (kind == 'b') s_table[target].button = (int)value;
         }
         if (!end) break;
@@ -296,8 +309,10 @@ void a2600session_binding_set_key(a2600session *s, int target, uint32_t keysym,
 {
     int victims[A2600_TARGET_COUNT], nvictims = 0, t;
     (void)s;
+    if (stolen && stolensz > 0) stolen[0] = '\0';
     if (target < 0 || target >= A2600_TARGET_COUNT) return;
     keysym = fold(keysym);
+    if (a2600session_key_reserved(keysym)) return;
     pthread_mutex_lock(&s_lock);
     ensure_seeded_locked();
     if (keysym) {
@@ -338,6 +353,20 @@ void a2600session_binding_set_button(a2600session *s, int target, int button,
     persist_locked();
     pthread_mutex_unlock(&s_lock);
     describe_stolen(victims, nvictims, stolen, stolensz);
+}
+
+/* Unbinds both the key and the pad button of a target: the Controllers
+ * window's Clear. */
+void a2600session_binding_clear(a2600session *s, int target)
+{
+    (void)s;
+    if (target < 0 || target >= A2600_TARGET_COUNT) return;
+    pthread_mutex_lock(&s_lock);
+    ensure_seeded_locked();
+    s_table[target].keysym = 0;
+    s_table[target].button = A2600_PAD_BTN_NONE;
+    persist_locked();
+    pthread_mutex_unlock(&s_lock);
 }
 
 void a2600session_bindings_reset(a2600session *s)
@@ -506,7 +535,7 @@ int a2600session_key(a2600session *s, uint32_t keysym, int down)
             if (s->held_keysym[t] == folded) continue;  /* auto-repeat */
             s->held_keysym[t] = folded;
             pthread_mutex_unlock(&s_lock);
-            a2600session_press(s, t, 1);
+            input_press(s, A2600_SRC_KEYBOARD, t, 1);
             pthread_mutex_lock(&s_lock);
         }
         pthread_mutex_unlock(&s_lock);
@@ -519,7 +548,7 @@ int a2600session_key(a2600session *s, uint32_t keysym, int down)
         for (t = 0; t < A2600_TARGET_COUNT; t++) {
             if (s->held_keysym[t] == folded) {
                 s->held_keysym[t] = 0;
-                a2600session_press(s, t, 0);
+                input_press(s, A2600_SRC_KEYBOARD, t, 0);
                 hit = 1;
             }
         }
@@ -527,14 +556,13 @@ int a2600session_key(a2600session *s, uint32_t keysym, int down)
     }
 }
 
+/* Focus loss: lets go of everything the keyboard and the window's mouse
+ * hold. A gamepad is a physical thing and is left alone. */
 void a2600session_release_all(a2600session *s)
 {
     int t;
     if (!s) return;
-    for (t = 0; t < A2600_TARGET_COUNT; t++) {
-        if (s->held_keysym[t]) {
-            s->held_keysym[t] = 0;
-            a2600session_press(s, t, 0);
-        }
-    }
+    for (t = 0; t < A2600_TARGET_COUNT; t++)
+        s->held_keysym[t] = 0;
+    input_release_sources(s, A2600_SRC_KEYBOARD | A2600_SRC_POINTER);
 }

@@ -6,6 +6,7 @@
  */
 
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 
 #if defined(_WIN32)
@@ -203,6 +204,10 @@ void StellaHost::stop()
   pthread_join(myThread, nullptr);
   myThreadStarted = false;
   myRunning.store(false);
+  {
+    const std::lock_guard<std::mutex> lock(myHoldMutex);
+    myHolds.clear();
+  }
 #if defined(_WIN32)
   timeEndPeriod(1);
 #endif
@@ -275,6 +280,7 @@ void StellaHost::emulateFrame()
   // housekeeping OSystem::mainLoop does.
   ++myFrameCount;
   releasePulses();
+  refreshHolds();
   os.eventHandler().poll(TimerManager::getTicks());
 
   DispatchResult result;
@@ -389,6 +395,50 @@ void StellaHost::pulseEvent(Event::Type type, int frames)
   enqueueEvent(type, 1);
   const std::lock_guard<std::mutex> lock(myPulseMutex);
   myPulses.emplace_back(myFrameCount.load() + static_cast<uInt64>(frames), type);
+}
+
+void StellaHost::setAnalogHold(Event::Type type, Int32 value)
+{
+  bool release = false;
+  {
+    const std::lock_guard<std::mutex> lock(myHoldMutex);
+    AnalogHold* h = nullptr;
+    for(auto& e : myHolds)
+      if(e.type == type) { h = &e; break; }
+    if(!h)
+    {
+      myHolds.push_back({type, 0, 0});
+      h = &myHolds.back();
+    }
+    release = (value == 0) && (h->value != 0);
+    h->value = value;
+    if(release) h->last = 0;
+  }
+  if(release)
+    enqueueEvent(type, 0);       // the position is released: Stella sees centre once
+}
+
+void StellaHost::refreshHolds()
+{
+  std::vector<std::pair<Event::Type, Int32>> send;
+  {
+    const std::lock_guard<std::mutex> lock(myHoldMutex);
+    for(auto& h : myHolds)
+    {
+      if(h.value == 0) continue;
+      // The target itself if it differs enough from what Stella saw last
+      // frame, else a neighbour 12 away (either side, whichever fits).
+      Int32 v = h.value;
+      if(std::abs(v - h.last) <= 10)
+      {
+        v = h.value + 12;
+        if(v > 32767 || std::abs(v - h.last) <= 10) v = h.value - 12;
+      }
+      h.last = v;
+      send.emplace_back(h.type, v);
+    }
+  }
+  for(const auto& e : send) enqueueEvent(e.first, e.second);
 }
 
 void StellaHost::releasePulses()

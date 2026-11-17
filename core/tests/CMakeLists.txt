@@ -88,6 +88,48 @@ target_link_libraries(gamepad_test PRIVATE a2600_session)
 target_include_directories(gamepad_test PRIVATE "${CMAKE_SOURCE_DIR}/core/src")
 add_test(NAME gamepad COMMAND gamepad_test)
 
+# The remembered pad -> port table (text form, escaping, lookup, the cap),
+# pure.
+add_executable(pad_assign_test pad_assign_test.c)
+target_link_libraries(pad_assign_test PRIVATE a2600_session)
+target_include_directories(pad_assign_test PRIVATE "${CMAKE_SOURCE_DIR}/core/src")
+add_test(NAME pad_assign COMMAND pad_assign_test)
+
+# Every way of holding an input merged: the keyboard, the window's pointer and
+# each gamepad are separate sources, opposed pairs cancel, a toggle flips on
+# each source's press, release_all and a pad that goes away let go of the right
+# things; then on a running machine, what is held across a start, the wheel's
+# pulses and a restart.
+add_executable(input_merge_test input_merge_test.c)
+target_link_libraries(input_merge_test PRIVATE a2600_session)
+target_include_directories(input_merge_test PRIVATE "${CMAKE_SOURCE_DIR}/core/src")
+add_test(NAME input_merge COMMAND input_merge_test)
+set_tests_properties(input_merge PROPERTIES TIMEOUT 120)
+
+# An absolute paddle position set through the analog API stays put on a running
+# machine (Stella acts on an analog event for one frame unless it keeps
+# changing; the host re-sends a held position every frame): read the pot the
+# way a game does, set once, 600 ms later, then back to centre with 0.
+add_executable(paddle_hold_test paddle_hold_test.c)
+target_link_libraries(paddle_hold_test PRIVATE a2600_session)
+target_include_directories(paddle_hold_test PRIVATE "${CMAKE_SOURCE_DIR}/core/tests")
+add_test(NAME paddle_hold COMMAND paddle_hold_test)
+set_tests_properties(paddle_hold PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+# The on-screen controllers' layout, hit test and drag maths, pure.
+add_executable(controls_test controls_test.c)
+target_link_libraries(controls_test PRIVATE a2600_session)
+add_test(NAME controls COMMAND controls_test)
+
+# The gamepad layer end to end with SDL virtual joysticks: ports, assignment,
+# unplug, the analog controllers, a raw HID adapter, the remembered
+# assignment and the toasts. SKIPs (77) with no virtual joysticks or real pads.
+add_executable(gamepad_layer_test gamepad_layer_test.c)
+target_link_libraries(gamepad_layer_test PRIVATE a2600_session)
+target_include_directories(gamepad_layer_test PRIVATE "${CMAKE_SOURCE_DIR}/core/src")
+add_test(NAME gamepad_layer COMMAND gamepad_layer_test)
+set_tests_properties(gamepad_layer PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300 RUN_SERIAL ON)
+
 # The debugger contract against the running CONFIG client: stop, registers,
 # step, disassembly with the PC line, breakpoints, TIA state, resume.
 add_executable(debug_test debug_test.c)

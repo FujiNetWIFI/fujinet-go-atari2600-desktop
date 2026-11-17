@@ -140,6 +140,16 @@ class StellaHost
 
     // ---- input --------------------------------------------------------
     void enqueueEvent(Event::Type type, Int32 value);
+    // An absolute analog position (a *Analog event) that stays put. Stella
+    // keeps analog events "stored indefinitely" but acts on one only when it
+    // differs from the previous frame's value by more than 10, then drops the
+    // pin back to the digital position: a knob held at one value would show
+    // for a single frame. So a nonzero position is owned by the host, which
+    // re-sends it every frame, each time within 12 of the target (0.02% of the
+    // range, invisible in a game) but always more than 10 from the value sent
+    // the frame before. value 0 releases the hold (sent once, then the
+    // digital input shows again).
+    void setAnalogHold(Event::Type type, Int32 value);
 
     // ---- jobs ---------------------------------------------------------
     // Runs fn(OSystem&) on the Stella thread and returns its result.
@@ -228,6 +238,10 @@ class StellaHost
     std::mutex myPulseMutex;
     std::vector<std::pair<uInt64, Event::Type>> myPulses;  // release at frame N
     void releasePulses();
+    std::mutex myHoldMutex;
+    struct AnalogHold { Event::Type type; Int32 value; Int32 last; };   // value 0 = released
+    std::vector<AnalogHold> myHolds;
+    void refreshHolds();
 
     // the Video tab's capture: the taps and myCapCur belong to the Stella
     // thread; myCapPub (the last finished frame) is read under its mutex
