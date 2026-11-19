@@ -61,6 +61,13 @@
     <release version="@PROJECT_VERSION@" date="2026-11-19">
       <description>
         <p>
+          The bundled FujiNet firmware is now the current upstream version, which loads .a26 game files natively.
+        </p>
+      </description>
+    </release>
+    <release version="0.10.2" date="2026-11-19">
+      <description>
+        <p>
           The built-in file browser scrolls a long file name once you rest on it, so names too long for the screen can be read in full.
         </p>
       </description>

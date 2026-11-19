@@ -60,14 +60,12 @@ find_package(Git QUIET)
 set(STELLA_COMMIT "52ed3a749bad8d1dcebfaccc4163a50b33ccdbb1")
 set(STELLA_URL "https://github.com/tschak909/stella")
 
-# fujinet-firmware, fork branch boip-idle-wait-on-nodelay (81f9fdb3c): the old
-# pin (c68e86303, tcp-protocol-disable-nagle: master plus TCP_NODELAY on the
-# BoIP listener's accepted socket) plus the BoIP idle-wait fix (PR #2247; idle
-# wakeups ~1000/s -> ~100/s). Temporary: moves back to master when #2247
-# merges. The commit lives only on the fork, hence the fork URL. Recorded in
-# three places -- here and in both flatpak manifests (build-aux/flatpak/*.yml).
-set(FUJINET_COMMIT "81f9fdb3ce7bd7af9ef507282782085ad18fc16c")
-set(FUJINET_URL "https://github.com/tschak909/fujinet-firmware")
+# fujinet-firmware, upstream master (33299489): it has the BoIP idle-wait fix
+# (PR #2247) and the .a26 ROM type (PR #2338) the old fork pin stood in for.
+# Recorded in three places -- here and in both flatpak manifests
+# (build-aux/flatpak/*.yml).
+set(FUJINET_COMMIT "3329948953e6f50410e09822f843271197d09a1f")
+set(FUJINET_URL "https://github.com/FujiNetWIFI/fujinet-firmware")
 
 # a2600_provide_dependency(NAME <n> PATH <p> SENTINEL <file> OVERRIDE <VAR>
 #                           RESULT <out>
