@@ -260,6 +260,7 @@ class StellaHost
     std::mutex myVsyncMutex;
     std::condition_variable myVsyncCv;
     uInt64 myVsyncSerial{0};
+    uInt64 myJobSerial{0};      // bumped by post(), under myVsyncMutex
     Int64 myVsyncLastNs{0};
     Int64 myVsyncPeriodNs{0};   // smoothed tick interval; 0 = not yet known
     Int64 myNextFrameNs{0};

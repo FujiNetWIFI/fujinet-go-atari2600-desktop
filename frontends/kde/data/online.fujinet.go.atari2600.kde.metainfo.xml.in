@@ -58,7 +58,14 @@
     <!-- The CURRENT release templates its version from @PROJECT_VERSION@, so
          it cannot disagree with the tree; past releases are literal. The
          release job checks that this first entry is still a template. -->
-    <release version="@PROJECT_VERSION@" date="2026-11-17">
+    <release version="@PROJECT_VERSION@" date="2026-11-18">
+      <description>
+        <p>
+          Fixed a brief pause about once a second in games on the GNOME version.
+        </p>
+      </description>
+    </release>
+    <release version="0.10.0" date="2026-11-17">
       <description>
         <p>
           The Controllers window is drawn like the real Atari hardware: the CX40 joystick, the CX30 paddles, the CX20 driving controller and the CX50 keypad on each port (following the port type), and the six-switch console with its latched switches. Click, drag the stick or a knob, turn the driving wheel, and held controls light up.

@@ -160,6 +160,13 @@ target_link_libraries(redetect_test PRIVATE stella_core)
 add_test(NAME redetect COMMAND redetect_test)
 set_tests_properties(redetect PROPERTIES TIMEOUT 60)
 
+# A job posted while the core is phase-locked to the frame clock runs at once
+# (GNOME calls withStella from the thread that ticks).
+add_executable(vsync_jobs_test vsync_jobs_test.cxx)
+target_link_libraries(vsync_jobs_test PRIVATE stella_core)
+add_test(NAME vsync_jobs COMMAND vsync_jobs_test)
+set_tests_properties(vsync_jobs PROPERTIES TIMEOUT 60)
+
 # The Video tab's controller (core/src/vidtab.c): the TIA's priority encoder
 # replayed from synthetic captures, the views, the inspector, the tables and
 # a fuzz; then against the real machine (CONFIG): Display is the TIA's frame

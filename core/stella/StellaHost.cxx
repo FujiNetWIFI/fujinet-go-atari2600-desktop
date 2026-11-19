@@ -221,6 +221,12 @@ void StellaHost::post(std::function<void()> job)
     const std::lock_guard<std::mutex> lock(myJobMutex);
     myJobs.push_back(std::move(job));
   }
+  {
+    // Under the pacing mutex so pace() cannot test its predicate, miss this
+    // and then block: a lost wakeup would cost a whole tick timeout.
+    const std::lock_guard<std::mutex> lock(myVsyncMutex);
+    ++myJobSerial;
+  }
   myJobCv.notify_all();
   myVsyncCv.notify_all();
 }
@@ -474,8 +480,29 @@ void StellaHost::pace(uInt64 cyclesRun)
     if(recent)
     {
       const uInt64 seen = myVsyncSerial;
-      const bool ticked = myVsyncCv.wait_for(lock, std::chrono::nanoseconds(2 * frameNs),
-        [&] { return myVsyncSerial != seen || myQuit.load(); });
+      const auto deadline = Clock::now() + std::chrono::nanoseconds(2 * frameNs);
+      uInt64 jobsSeen = myJobSerial;
+      bool ticked = false;
+      // A frontend that ticks from the thread that also calls withStella()
+      // (GNOME) cannot tick while that call blocks, so a job must not wait
+      // for the tick: run it now, then keep waiting for the same tick.
+      for(;;)
+      {
+        ticked = myVsyncCv.wait_until(lock, deadline, [&] {
+          return myVsyncSerial != seen || myJobSerial != jobsSeen || myQuit.load();
+        });
+        if(!ticked || myVsyncSerial != seen || myQuit.load()) break;
+        jobsSeen = myJobSerial;
+        lock.unlock();
+        runJobs();
+        lock.lock();
+        if(!myOSystem->hasConsole()
+           || myOSystem->eventHandler().state() != EventHandlerState::EMULATION)
+        {
+          myNextFrameNs = monoNs();
+          return;
+        }
+      }
       // Keep the wall-clock ladder rebased so dropping back out is seamless.
       myNextFrameNs = monoNs();
       if(ticked) return;
