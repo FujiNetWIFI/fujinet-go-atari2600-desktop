@@ -381,6 +381,10 @@ jobs:
     runs-on: [self-hosted, macOS, X64, tahoe]
     env:
       CMAKE_OSX_ARCHITECTURES: "arm64;x86_64"
+      # Apple clang 26 rejects libssh's -fstack-clash-protection, and the
+      # FujiNet firmware builds with -Werror.
+      CFLAGS: -Wno-error=unused-command-line-argument
+      CXXFLAGS: -Wno-error=unused-command-line-argument
     steps:
       - uses: actions/checkout@v4
 
