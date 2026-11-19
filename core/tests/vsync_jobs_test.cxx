@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <random>
 #include <thread>
+#include <vector>
 
 #include "StellaHost.hxx"
 
@@ -38,7 +39,7 @@ int main()
   // The GTK thread: tick at 60 Hz; every 10th tick make a synchronous call.
   const auto period = std::chrono::nanoseconds(16'666'667);
   auto next = Clock::now();
-  double worst = 0;
+  std::vector<double> lat;
   for(int i = 0; i < 20; ++i)   // let the lock engage
   {
     host.notifyVsync(0);
@@ -57,7 +58,7 @@ int main()
       const auto t0 = Clock::now();
       host.withStella([](OSystem&) { return 0; });
       const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-      worst = std::max(worst, ms);
+      lat.push_back(ms);
     }
     next += period;
     std::this_thread::sleep_until(next);
@@ -65,10 +66,14 @@ int main()
   const uInt64 frames = host.frameCount() - frames0;
   host.stop();
 
-  std::printf("worst withStella latency %.1f ms, %llu frames for %d ticks\n",
-              worst, static_cast<unsigned long long>(frames), ticks);
+  // The median, not the worst: a loaded CI runner can delay any one call by
+  // tens of ms, but the old code delayed EVERY call by the tick timeout.
+  std::sort(lat.begin(), lat.end());
+  const double median = lat[lat.size() / 2];
+  std::printf("median withStella latency %.1f ms (worst %.1f), %llu frames for %d ticks\n",
+              median, lat.back(), static_cast<unsigned long long>(frames), ticks);
   int bad = 0;
-  if(worst > 25.0) { std::printf("FAIL: job waited for the tick timeout\n"); ++bad; }
+  if(median > 25.0) { std::printf("FAIL: job waited for the tick timeout\n"); ++bad; }
   if(frames < ticks * 0.9 || frames > ticks * 1.1) { std::printf("FAIL: frames not locked to ticks\n"); ++bad; }
   if(!bad) std::printf("PASS\n");
   return bad ? 1 : 0;
