@@ -58,7 +58,14 @@
     <!-- The CURRENT release templates its version from @PROJECT_VERSION@, so
          it cannot disagree with the tree; past releases are literal. The
          release job checks that this first entry is still a template. -->
-    <release version="@PROJECT_VERSION@" date="2026-11-18">
+    <release version="@PROJECT_VERSION@" date="2026-11-19">
+      <description>
+        <p>
+          The built-in file browser scrolls a long file name once you rest on it, so names too long for the screen can be read in full.
+        </p>
+      </description>
+    </release>
+    <release version="0.10.1" date="2026-11-18">
       <description>
         <p>
           Fixed a brief pause about once a second in games on the GNOME version.
